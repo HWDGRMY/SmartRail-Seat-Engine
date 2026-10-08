@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SmartRail-Seat-Engine · 智能铁路座位协同分配引擎</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #171d26;
+    --panel-2: #1e2632;
+    --line: #2b3542;
+    --text: #e6edf3;
+    --muted: #8b98a5;
+    --accent: #4c9aff;
+    --ok: #35c46a;
+    --warn: #e3b341;
+    --bad: #f85149;
+    --quiet: #7b61ff;
+    --accessible: #16b8bf;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 14px; line-height: 1.6;
+  }
+  header {
+    padding: 18px 24px; border-bottom: 1px solid var(--line);
+    display: flex; flex-wrap: wrap; gap: 16px; align-items: baseline;
+  }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  main { display: grid; grid-template-columns: 340px 1fr; gap: 16px; padding: 16px 24px 48px; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; }
+  button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 7px; padding: 7px 10px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #06121f; font-weight: 600; }
+  button.scenario { width: 100%; text-align: left; margin-bottom: 6px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .stat { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dashed var(--line); }
+  .stat:last-child { border-bottom: 0; }
+  .stat b { font-variant-numeric: tabular-nums; }
+  pre { white-space: pre-wrap; word-break: break-word; background: var(--panel-2); border-radius: 8px; padding: 10px; margin: 8px 0 0; font-size: 12px; max-height: 260px; overflow: auto; }
+  .cars { display: flex; flex-direction: column; gap: 12px; }
+  .car { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .car.quiet { border-color: var(--quiet); }
+  .car.accessible { border-color: var(--accessible); }
+  .car-head { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; font-size: 12px; color: var(--muted); }
+  .car-head b { color: var(--text); font-size: 13px; }
+  .badge { border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; font-size: 11px; }
+  .badge.quiet { border-color: var(--quiet); color: var(--quiet); }
+  .badge.accessible { border-color: var(--accessible); color: var(--accessible); }
+  .seats { display: grid; grid-auto-flow: column; grid-template-rows: repeat(var(--rows), auto); gap: 3px; overflow-x: auto; }
+  .seat {
+    width: 20px; height: 20px; border-radius: 5px; border: 1px solid var(--line);
+    background: #10161d; font-size: 9px; color: var(--muted);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .seat.occupied { background: #2b3542; border-color: #2b3542; color: #55606d; }
+  .seat.quiet:not(.occupied) { border-color: var(--quiet); }
+  .seat.accessible:not(.occupied) { border-color: var(--accessible); }
+  .seat.assigned { background: var(--ok); border-color: var(--ok); color: #06121f; font-weight: 700; }
+  .seat.assigned.quiet { background: var(--warn); border-color: var(--warn); }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  .tier0 { color: var(--bad); font-weight: 600; }
+  .ok { color: var(--ok); }
+  .muted { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SmartRail-Seat-Engine</h1>
+  <span class="sub">智能铁路座位协同分配引擎 · 分层决策状态机 + Tier 0-5 代价函数 + 图匹配（学术演示，数据全部本地生成）</span>
+</header>
+
+<main>
+  <section>
+    <div class="panel" style="margin-bottom:16px">
+      <h2>场景演练</h2>
+      <div id="scenarios"></div>
+      <div class="row" style="margin-top:8px">
+        <button id="btn-reset">重置车厢</button>
+        <button id="btn-credit-bad">模拟投诉（-50 信用分）</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label class="muted">模式
+          <select id="mode" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:5px">
+            <option value="">自动路由</option>
+            <option value="smart">模式二 · 智能协同</option>
+            <option value="degraded">模式三 · 强制降级</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom:16px">
+      <h2>运行状态</h2>
+      <div class="stat"><span>编组</span><b id="s-train">—</b></div>
+      <div class="stat"><span>余票率</span><b id="s-avail">—</b></div>
+      <div class="stat"><span>已占座位</span><b id="s-occupied">—</b></div>
+      <div class="stat"><span>本次模式</span><b id="s-mode">—</b></div>
+      <div class="stat"><span>求解器</span><b id="s-solver">—</b></div>
+      <div class="stat"><span>决策时延</span><b id="s-latency">—</b></div>
+      <div class="stat"><span>全局代价</span><b id="s-cost">—</b></div>
+      <div class="stat"><span>Tier 0 违规</span><b id="s-tier0">—</b></div>
+    </div>
+
+    <div class="panel">
+      <h2>可解释性</h2>
+      <pre id="explain">点击左侧场景按钮开始演练。</pre>
+    </div>
+  </section>
+
+  <section>
+    <div class="panel" style="margin-bottom:16px">
+      <h2>分配结果</h2>
+      <div id="assignments" class="muted">尚无分配。</div>
+    </div>
+    <div class="panel" style="margin-bottom:16px">
+      <h2>代价明细（Tier 0-5）</h2>
+      <div id="violations" class="muted">尚无代价条目。</div>
+    </div>
+    <div class="panel">
+      <h2>座位图</h2>
+      <div class="legend">
+        <span><i style="background:#10161d;border:1px solid var(--line)"></i>空位</span>
+        <span><i style="background:#2b3542"></i>已占</span>
+        <span><i style="background:var(--ok)"></i>本次分配</span>
+        <span><i style="background:var(--warn)"></i>静音车厢内分配</span>
+        <span><i style="border:1px solid var(--quiet)"></i>静音车厢</span>
+        <span><i style="border:1px solid var(--accessible)"></i>无障碍专区</span>
+      </div>
+      <div id="seatmap" class="cars"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let lastAssignments = [];
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const payload = await response.json();
+  if (!response.ok) {
+    const detail = payload.detail ?? payload;
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  return payload;
+}
+
+async function loadScenarios() {
+  const config = await api("/api/config");
+  const box = $("scenarios");
+  box.innerHTML = "";
+  for (const name of config.scenarios) {
+    const button = document.createElement("button");
+    button.className = "scenario";
+    button.textContent = name;
+    button.onclick = () => runScenario(name);
+    box.appendChild(button);
+  }
+}
+
+async function runScenario(name) {
+  try {
+    const mode = $("mode").value || undefined;
+    const result = await api("/api/scenario", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scenario: name, mode: mode || null }),
+    });
+    render(result);
+  } catch (error) {
+    $("explain").textContent = "演练失败：" + error.message;
+  }
+}
+
+function render(result) {
+  lastAssignments = result.assignments || [];
+  $("s-mode").textContent = result.mode;
+  $("s-solver").textContent = result.solver;
+  $("s-latency").textContent = (result.elapsed_ms ?? 0).toFixed(2) + " ms";
+  $("s-cost").textContent = (result.total_cost ?? 0).toFixed(0) + " 分";
+  const tier0 = (result.violations || []).filter((v) => v.tier === 0);
+  $("s-tier0").innerHTML = tier0.length
+    ? '<span class="tier0">' + tier0.length + " 条</span>"
+    : '<span class="ok">0 条（底线守住）</span>';
+  $("explain").textContent = result.explanation || "（无）";
+
+  const rows = lastAssignments.map((a) => `
+    <tr>
+      <td><code>${a.passenger_id}</code></td>
+      <td>${a.seat_id}</td>
+      <td>${a.quiet_carriage ? '<span class="badge quiet">静音</span>' : ""}</td>
+      <td class="muted">${a.reason || ""}</td>
+    </tr>`).join("");
+  const waiting = (result.waitlisted || []).length
+    ? `<p class="muted">候补：${result.waitlisted.join("、")}</p>` : "";
+  $("assignments").innerHTML = (rows
+    ? `<table><thead><tr><th>乘客</th><th>座位</th><th>车厢</th><th>分配理由</th></tr></thead><tbody>${rows}</tbody></table>`
+    : '<p class="muted">本次无成功分配。</p>') + waiting
+    + (result.routing_reason ? `<p class="muted">路由：${result.routing_reason}</p>` : "")
+    + (result.notes || []).map((n) => `<p class="muted">· ${n}</p>`).join("");
+
+  const items = (result.violations || []).slice().sort((a, b) => a.tier - b.tier);
+  $("violations").innerHTML = items.length
+    ? `<table><thead><tr><th>Tier</th><th>代码</th><th>分值</th><th>说明</th></tr></thead><tbody>` +
+      items.map((v) => `<tr>
+        <td>${v.tier}</td>
+        <td><code>${v.code}</code></td>
+        <td class="${v.is_reward ? "ok" : "tier0"}">${v.is_reward ? "+" : "−"}${v.penalty}</td>
+        <td class="muted">${v.detail}</td></tr>`).join("") + "</tbody></table>"
+    : '<p class="ok">无任何代价条目：全部约束已满足。</p>';
+
+  refreshMap();
+}
+
+async function refreshMap() {
+  const snapshot = await api("/api/snapshot");
+  $("s-train").textContent = snapshot.train_code;
+  $("s-avail").textContent = (snapshot.availability_ratio * 100).toFixed(1) + " %";
+  $("s-occupied").textContent = snapshot.occupied_count + " / " + snapshot.total_seats;
+  const latency = snapshot.latency || {};
+  if (latency.count) {
+    $("s-latency").textContent = `P50 ${latency.p50}ms · P99 ${latency.p99}ms`;
+  }
+  const assigned = new Map(lastAssignments.map((a) => [a.seat_id, a.passenger_id]));
+  const container = $("seatmap");
+  container.innerHTML = "";
+  for (const car of snapshot.carriages) {
+    const seats = snapshot.seats.filter((s) => s.carriage === car.number);
+    if (!seats.length) continue;
+    const card = document.createElement("div");
+    card.className = "car" + (car.quiet ? " quiet" : "") + (car.accessible ? " accessible" : "");
+    card.innerHTML = `<div class="car-head">
+        <b>${String(car.number).padStart(2, "0")} 车</b>
+        <span>${car.class_code}</span>
+        <span>${car.rows} 排 × ${car.columns.length} 列</span>
+        ${car.quiet ? '<span class="badge quiet">静音车厢</span>' : ""}
+        ${car.accessible ? '<span class="badge accessible">无障碍专区</span>' : ""}
+      </div>`;
+    const grid = document.createElement("div");
+    grid.className = "seats";
+    grid.style.setProperty("--rows", String(car.rows));
+    for (const seat of seats) {
+      const cell = document.createElement("div");
+      const classes = ["seat"];
+      if (seat.occupied && !assigned.has(seat.seat_id)) classes.push("occupied");
+      if (seat.quiet) classes.push("quiet");
+      if (seat.accessible) classes.push("accessible");
+      if (assigned.has(seat.seat_id)) classes.push("assigned");
+      cell.className = classes.join(" ");
+      cell.title = `${seat.seat_id}${assigned.has(seat.seat_id) ? " · " + assigned.get(seat.seat_id) : ""}`;
+      cell.textContent = assigned.has(seat.seat_id) ? "●" : seat.col;
+      grid.appendChild(cell);
+    }
+    card.appendChild(grid);
+    container.appendChild(card);
+  }
+}
+
+$("btn-reset").onclick = async () => {
+  lastAssignments = [];
+  await api("/api/reset", { method: "POST" });
+  $("explain").textContent = "已重置车厢与占座状态。";
+  $("assignments").innerHTML = '<span class="muted">尚无分配。</span>';
+  $("violations").innerHTML = '<span class="muted">尚无代价条目。</span>';
+  refreshMap();
+};
+
+$("btn-credit-bad").onclick = async () => {
+  const passengerId = prompt("对哪位乘客登记静音车厢投诉？（乘客 ID）", "S1");
+  if (!passengerId) return;
+  const info = await api("/api/credit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ passenger_id: passengerId, action: "complaint" }),
+  });
+  $("explain").textContent = info.message;
+};
+
+loadScenarios().then(refreshMap);
+</script>
+</body>
+</html>

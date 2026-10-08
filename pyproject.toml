@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smartrail-seat-engine"
+version = "3.0.0"
+description = "高铁选座决策引擎：分层罚函数 + 运筹学 + 强化学习（V1 启发式 / V2 CP-SAT / V3 GNN+PPO）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "周昊 (HWDGRMY)", email = "zhouhao_oss@163.com" }]
+keywords = [
+  "railway", "seat-allocation", "optimization", "graph-matching",
+  "multi-objective", "cp-sat", "reinforcement-learning", "gnn",
+]
+classifiers = [
+  "Programming Language :: Python :: 3.10",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = []
+
+[project.optional-dependencies]
+# 运筹学求解（V2.0 的 CP-SAT 路线）
+solver = ["ortools>=9.8"]
+# 强化学习（V3.0 的 GNN + PPO）
+rl = ["torch>=2.0", "numpy>=1.24"]
+# Web 服务层
+web = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "pydantic>=2.6"]
+# 开发与测试
+dev = ["pytest>=8.0", "httpx>=0.27"]
+all = ["ortools>=9.8", "torch>=2.0", "numpy>=1.24", "fastapi>=0.110", "uvicorn[standard]>=0.27"]
+
+[project.urls]
+Homepage = "https://github.com/HWDGRMY/SmartRail-Seat-Engine"
+Issues = "https://github.com/HWDGRMY/SmartRail-Seat-Engine/issues"
+
+[project.scripts]
+smartrail-demo = "smartrail.demo:main"
+smartrail-bench = "smartrail.benchmark:main"
+smartrail-serve = "smartrail.api.stdlib_server:main"
+smartrail-train = "smartrail.v3.train:main"
+smartrail-report = "smartrail.report:main"
+
+[tool.setuptools.packages.find]
+include = ["smartrail*"]
+
+[tool.setuptools.package-data]
+"smartrail.web" = ["*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

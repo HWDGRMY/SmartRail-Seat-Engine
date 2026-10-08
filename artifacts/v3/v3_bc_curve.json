@@ -1,0 +1,195 @@
+{
+  "source": "behavior_cloning",
+  "episodes": 1500,
+  "samples": 3669,
+  "expert_seat_rate": 0.9845333333333333,
+  "epochs": 35,
+  "history": [
+    {
+      "epoch": 1,
+      "loss": 2.2621372814836174,
+      "action_accuracy": 0.4243663123466885
+    },
+    {
+      "epoch": 2,
+      "loss": 1.5066026428650166,
+      "action_accuracy": 0.5107658762605615
+    },
+    {
+      "epoch": 3,
+      "loss": 1.2977349449848306,
+      "action_accuracy": 0.5524666121559008
+    },
+    {
+      "epoch": 4,
+      "loss": 1.109542702806407,
+      "action_accuracy": 0.6603979285908967
+    },
+    {
+      "epoch": 5,
+      "loss": 1.0689358793455979,
+      "action_accuracy": 0.6756609430362497
+    },
+    {
+      "epoch": 6,
+      "loss": 1.0393342499075264,
+      "action_accuracy": 0.6892886345053147
+    },
+    {
+      "epoch": 7,
+      "loss": 1.1111006120155598,
+      "action_accuracy": 0.6535840828563642
+    },
+    {
+      "epoch": 8,
+      "loss": 1.020068137810148,
+      "action_accuracy": 0.7050967566094304
+    },
+    {
+      "epoch": 9,
+      "loss": 1.0610157867957806,
+      "action_accuracy": 0.6824747887707823
+    },
+    {
+      "epoch": 10,
+      "loss": 1.1203199429758663,
+      "action_accuracy": 0.6361406377759607
+    },
+    {
+      "epoch": 11,
+      "loss": 1.0380272032885716,
+      "action_accuracy": 0.6892886345053147
+    },
+    {
+      "epoch": 12,
+      "loss": 1.0113516747951508,
+      "action_accuracy": 0.6503134369037885
+    },
+    {
+      "epoch": 13,
+      "loss": 0.9328650708856254,
+      "action_accuracy": 0.7018261106568547
+    },
+    {
+      "epoch": 14,
+      "loss": 0.8404447621312635,
+      "action_accuracy": 0.7590624148269283
+    },
+    {
+      "epoch": 15,
+      "loss": 0.9556946990818813,
+      "action_accuracy": 0.7356227855001363
+    },
+    {
+      "epoch": 16,
+      "loss": 1.155115367009722,
+      "action_accuracy": 0.7018261106568547
+    },
+    {
+      "epoch": 17,
+      "loss": 0.8067913373996471,
+      "action_accuracy": 0.758789860997547
+    },
+    {
+      "epoch": 18,
+      "loss": 0.7505773439489561,
+      "action_accuracy": 0.7737803216135186
+    },
+    {
+      "epoch": 19,
+      "loss": 0.7541546811317575,
+      "action_accuracy": 0.7759607522485691
+    },
+    {
+      "epoch": 20,
+      "loss": 0.7275873890210842,
+      "action_accuracy": 0.7958571817934041
+    },
+    {
+      "epoch": 21,
+      "loss": 0.6930377252143005,
+      "action_accuracy": 0.7906786590351594
+    },
+    {
+      "epoch": 22,
+      "loss": 0.7016866438347718,
+      "action_accuracy": 0.7950395203052603
+    },
+    {
+      "epoch": 23,
+      "loss": 0.7231067280317175,
+      "action_accuracy": 0.7868629054238212
+    },
+    {
+      "epoch": 24,
+      "loss": 0.6868585748919125,
+      "action_accuracy": 0.7860452439356773
+    },
+    {
+      "epoch": 25,
+      "loss": 0.7297694056198515,
+      "action_accuracy": 0.7786862905423821
+    },
+    {
+      "epoch": 26,
+      "loss": 0.6654181439301063,
+      "action_accuracy": 0.7999454892341238
+    },
+    {
+      "epoch": 27,
+      "loss": 0.6709079428993422,
+      "action_accuracy": 0.7846824747887707
+    },
+    {
+      "epoch": 28,
+      "loss": 0.6537922225121794,
+      "action_accuracy": 0.789315889888253
+    },
+    {
+      "epoch": 29,
+      "loss": 0.6507035617170662,
+      "action_accuracy": 0.7920414281820659
+    },
+    {
+      "epoch": 30,
+      "loss": 0.6546554508908041,
+      "action_accuracy": 0.7923139820114473
+    },
+    {
+      "epoch": 31,
+      "loss": 0.6519465271768898,
+      "action_accuracy": 0.7969473971109294
+    },
+    {
+      "epoch": 32,
+      "loss": 0.6435192355821873,
+      "action_accuracy": 0.7950395203052603
+    },
+    {
+      "epoch": 33,
+      "loss": 0.6378553427498916,
+      "action_accuracy": 0.7991278277459798
+    },
+    {
+      "epoch": 34,
+      "loss": 0.6319299088469867,
+      "action_accuracy": 0.8007631507222677
+    },
+    {
+      "epoch": 35,
+      "loss": 0.6347020381483538,
+      "action_accuracy": 0.7988552739165985
+    }
+  ],
+  "final_eval": {
+    "episodes": 20,
+    "avg_affinity": -1874.25,
+    "tier0_violations": 0,
+    "isolated_care": 9,
+    "seated": 52,
+    "waitlisted": 0,
+    "seat_rate": 1.0
+  },
+  "elapsed_s": 371.17,
+  "checkpoint": "artifacts\\v3\\v3_bc.pt"
+}
