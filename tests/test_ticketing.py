@@ -37,6 +37,9 @@ from smartrail.ticketing import (  # noqa: E402
 )
 from smartrail.ticketing.booking import evaluate_preference  # noqa: E402
 from smartrail.ticketing.devstore import SOURCE_SOLD  # noqa: E402
+from smartrail.ticketing.passenger_store import (  # noqa: E402
+    PASSENGER_TYPE_GROUPS,
+)
 
 # 静音/偏好相关的验收需要直接对分数，这里导入一次供多个用例复用
 from smartrail.carriage import g25_16_car_formation  # noqa: E402
@@ -69,17 +72,35 @@ def test_default_profiles_cover_every_type() -> None:
     kinds = Counter(profile.type_id for profile in profiles)
     duplicates = {k: v for k, v in kinds.items() if v > 1}
     check(not duplicates, f"每种人群恰好一位（重复：{duplicates or '无'}）")
-    check(len(catalog["groups"]) == 5, f"类型分 {len(catalog['groups'])} 组")
+    groups = catalog["groups"]
+    check(len(groups) == len(PASSENGER_TYPE_GROUPS),
+          f"分组数与定义一致（{len(groups)}）")
+    check(sum(1 for g in groups if g.get("basic")) == 1,
+          "恰好一个基础分组")
+    # 每个分组都要有 hint 与 types，否则界面会渲染出空壳
+    for group in groups:
+        check(bool(group.get("hint")), f"『{group['label']}』有说明文案")
+        check(bool(group["types"]), f"『{group['label']}』非空")
 
 
 def test_add_passenger_gets_fresh_id() -> None:
-    """新增乘车人的编号必须接在预制档案之后，不能撞号。"""
+    """新增乘车人的编号必须接在预制档案之后，不能撞号。
+
+    编号**从预制档案数量推导**，不写死 —— 早期写死 ``C017``，
+    预制档案增删之后就失效了（现在预制 18 位，下一位是 C019）。
+    """
     print("[购票] 添加乘车人")
     store = reset_passenger_store()
+    preset_count = len(store.presets())
     added = store.add({"name": "测试旅客", "type_id": "child"})
-    check(added.profile_id == "C017",
-          f"新编号接在预制之后（实际 {added.profile_id}）")
+    expect = f"C{preset_count + 1:03d}"
+    check(added.profile_id == expect,
+          f"新编号接在 {preset_count} 位预制之后（{added.profile_id}，期望 {expect}）")
     check(store.get(added.profile_id) is not None, "新乘车人可查回")
+    check(store.get(added.profile_id).source == "user",
+          "新增的标记为 user 来源（用户模式可见）")
+    check(len(store.user_added()) == 1, "用户添加列表里有 1 位")
+    check(len(store.all()) == preset_count + 1, "全部档案多了 1 位")
     check(added.resolves_needs_caregiver(), "儿童标记为需照护")
     try:
         store.add({"name": "", "type_id": "adult"})
@@ -480,53 +501,89 @@ def test_engine_rebuild_keeps_order_fields() -> None:
         check("class_code" in str(error), f"守卫拦下漏传（{str(error)[:50]}…）")
 
 
-def test_passenger_types_are_layered_for_real_users() -> None:
-    """人群选择必须分两层：常用档 + 需要特别服务。
+def test_base_groups_match_composition_spec() -> None:
+    """基础分组必须与 ``composition.BASE_GROUP_FIELDS`` **完全一致**。
 
-    真实反馈：16 种类型平铺给旅客看时，"成人"旁边并列着
-    "孕妇（1-3个月）/ 孕妇（4-6个月）/ 孕妇（7-9个月）/ 视障（需导盲）"，
-    普通人看了会迷惑 —— 那是需要医学与无障碍知识才能选的选项。
+    需求原文给的就是这 5 类：
 
-    正确做法：**常用档只放普通人一眼能选的**（成人 / 学生 / 儿童 / 老人），
-    孕妇（按孕周）、残疾（按类别）、陪同人、未成年细分收进"需要特别服务"。
-    孕妇与残疾仍要细分（待遇不同），但它们是**第二层**。
+        id: 'adult'   成人   满18周岁及以上
+        id: 'youth'   青少年  满14周岁但未满18周岁
+        id: 'child'   儿童   满4周岁但未满14周岁
+        id: 'toddler' 幼儿   满1周岁但未满4周岁
+        id: 'infant'  婴儿   未满1周岁
 
-    这里同时守住"两层都存在" —— 只做常用档会让孕妇与轮椅旅客无处可选。
+    真实事故：``passenger_store.PASSENGER_TYPES`` 里另立了一套 16 类，
+    还**自己加了"学生"**当成基础分组，并把"孕妇（4-6个月）"
+    "视障（需导盲）"这类特殊人群平铺在同一层。
+    需求方从未定义过"学生"这个分组 —— 学生是**票价属性**，不是人群分类。
+
+    这里守住三件事：① 基础分组恰好是那 5 类；② 没有"学生"基础分组；
+    ③ 每个类型都归属于某个基础分组（``base_group`` 合法）。
     """
-    print("[购票] 人群选择分两层")
+    print("[购票] 基础分组与规格一致")
+    from smartrail.composition import BASE_GROUP_FIELDS
+
+    spec = [(item["id"], item["label"], item["desc"]) for item in BASE_GROUP_FIELDS]
     catalog = passenger_type_catalog()
-    groups = catalog["groups"]
-    basic = [g for g in groups if g.get("basic")]
-    special = [g for g in groups if not g.get("basic")]
+    basic_groups = [g for g in catalog["groups"] if g.get("basic")]
+    check(len(basic_groups) == 1, f"基础分组恰好 1 组（{len(basic_groups)}）")
+    basic = basic_groups[0]
+    check(basic["id"] == "basic", f"基础分组 id = {basic['id']}")
+    got = [(t["id"], t["label"], t["desc"]) for t in basic["types"]]
+    check([g[0] for g in got] == [s[0] for s in spec],
+          f"基础分组顺序与 id 一致（{[g[0] for g in got]}）")
+    check([g[1] for g in got] == [s[1] for s in spec],
+          f"标签一致（{[g[1] for g in got]}）")
+    check(len(got) == 5, f"恰好 5 类（{len(got)}）")
 
-    check(len(basic) == 1, f"常用档恰好 1 组（{len(basic)}）")
-    check(basic[0]["id"] == "basic", f"常用档 id = {basic[0]['id']}")
-    basic_ids = [t["id"] for t in basic[0]["types"]]
-    check(basic_ids == ["adult", "student", "child", "elderly"],
-          f"常用档是普通人看得懂的选项（{basic_ids}）")
-    # 常用档里不该出现需要专业判断的类型
-    for forbidden in ("pregnant_term", "blind_with_guide", "intellectual",
-                      "wheelchair", "toddler", "infant"):
-        check(forbidden not in basic_ids,
-              f"『{forbidden}』不在常用档（避免旅客困惑）")
+    # "学生"不能是基础分组
+    base_ids = [t["id"] for t in basic["types"]]
+    check("student" not in base_ids, "『学生』不在基础分组里（需求未定义该分组）")
+    student = next(t for t in catalog["types"] if t["id"] == "student")
+    check("票价" in student["desc"] or "优惠" in student["desc"],
+          f"『学生』被标为票价属性（{student['desc']}）")
+    # 注意 g["types"] 是**字典列表**（含 label/desc），不是 id 列表
+    student_group = next(g for g in catalog["groups"]
+                         if any(t["id"] == "student" for t in g["types"]))
+    check("票种" in student_group["label"] or "票价" in student_group["label"],
+          f"『学生』归在票种分组（{student_group['label']}）")
 
-    special_ids = [g["id"] for g in special]
-    check("pregnant" in special_ids, "孕妇单独一类")
-    check("disabled" in special_ids, "残疾旅客单独一类")
-    check("companion" in special_ids, "陪同人单独一类")
-    # 孕妇四档与残疾四类都必须仍可选中（不能因为收起来就丢了）
-    all_special = {t["id"] for g in special for t in g["types"]}
-    for needed in ("pregnant_early", "pregnant_mid", "pregnant_late",
-                   "pregnant_term", "wheelchair", "blind",
-                   "blind_with_guide", "intellectual", "caregiver"):
-        check(needed in all_special, f"『{needed}』仍可选（在特别服务里）")
-
-    # 两组加起来必须覆盖全部类型 —— 否则有类型永远选不到
+    # 每个类型都必须有合法的 base_group
     every = {t["id"] for t in catalog["types"]}
-    covered = set(basic_ids) | all_special
+    covered = {t["id"] for g in catalog["groups"] for t in g["types"]}
     check(covered == every,
-          f"两层覆盖全部 {len(every)} 种类型（缺失 {sorted(every - covered)}）")
-    check(len(every) == 16, f"类型总数仍为 16（{len(every)}）")
+          f"分组覆盖全部 {len(every)} 种类型（缺失 {sorted(every - covered)}）")
+    spec_ids = {s[0] for s in spec}
+    bad = [t["id"] for t in catalog["types"]
+           if t.get("base_group") not in spec_ids]
+    check(not bad, f"所有类型都归属到基础分组（非法：{bad or '无'}）")
+    # 特殊人群必须声明自己是叠加维度
+    for t in catalog["types"]:
+        if t["id"] not in spec_ids:
+            check(bool(t.get("special")),
+                  f"『{t['label']}』声明为叠加维度（special={t.get('special')}）")
+
+
+def test_special_dimensions_do_not_change_total() -> None:
+    """特殊人群是**叠加维度**，不改变总人数（与 composition 的公式一致）。"""
+    print("[购票] 特殊人群不计入总人数")
+    from smartrail.composition import OrderComposition, PlatformPolicy
+
+    bands = ("adult", "youth", "child", "toddler", "infant")
+    composition = OrderComposition()
+    composition.base["adult"] = 3
+    composition.base["child"] = 2
+    composition.disability["severe"]["adult"] = 1
+    composition.pregnant["term"]["adult"] = 1
+    composition.child_sub["child_quiet"] = 1
+    check(composition.total_passengers == 5,
+          f"总人数只数基础分组（{composition.total_passengers}，应为 5）")
+    # 健康成人要扣掉不能陪同的重度残疾
+    policy = PlatformPolicy()
+    check(composition.healthy_adults(policy) == 2,
+          f"健康成人扣掉重度残疾（{composition.healthy_adults(policy)}）")
+    check(composition.minors_under_14 == 2,
+          f"未满 14 岁只数 child+toddler+infant（{composition.minors_under_14}）")
 
 
 def test_user_page_has_collapsible_special_section() -> None:
@@ -536,9 +593,31 @@ def test_user_page_has_collapsible_special_section() -> None:
     check('id="specialBody"' in page, "含折叠区容器")
     check('id="btnSpecial"' in page, "含展开按钮")
     check("需要特别服务" in page, "按钮文案说明是特别服务")
-    check('id="typeList"' in page, "常用档平铺容器仍在")
+    check('id="typeList"' in page, "基础分组平铺容器仍在")
     check("typeGroups" in page, "按接口返回的分组渲染（不写死）")
     check("group.basic" in page, "按 basic 标记决定平铺或收起")
+
+
+def test_dev_page_composes_by_headcount() -> None:
+    """开发者页必须支持**添加任意数量**的基础分组，而不是勾选姓名。
+
+    需求："这里人名一点都不重要，而且我需要添加任意数量的成人什么的"。
+    """
+    print("[购票] 开发者页按人数分组")
+    page = (ROOT / "smartrail" / "web" / "developer.html").read_text(encoding="utf-8")
+    check("baseGroups" in page, "含基础分组步进器容器")
+    check("renderBaseGroups" in page, "渲染基础分组步进器")
+    check("baseCounts" in page, "按分组计数（不是选姓名）")
+    check("compositionSchema" in page, "从 /api/composition/schema 取口径（不写死）")
+    check("/api/composition/submit" in page, "提交走构成接口")
+    check("stepper" in page, "含加减步进器")
+    check("btnSpecialToggle" in page, "特殊人群可折叠")
+    check("specialBox" in page, "特殊人群容器")
+    check("data-testid" in page and "base-" in page,
+          "步进器有 testid（可被自动化点击）")
+    # 不该再有"勾选姓名"的旧控件
+    check("renderPassengerPicker" not in page, "旧的姓名勾选器已移除")
+    check("pickedProfiles" not in page, "旧的已选姓名状态已移除")
 
 
 def test_booking_page_is_gone() -> None:
@@ -581,8 +660,10 @@ def main() -> int:
         test_same_order_passengers_sit_together,
         test_class_code_is_a_hard_constraint,
         test_engine_rebuild_keeps_order_fields,
-        test_passenger_types_are_layered_for_real_users,
+        test_base_groups_match_composition_spec,
+        test_special_dimensions_do_not_change_total,
         test_user_page_has_collapsible_special_section,
+        test_dev_page_composes_by_headcount,
         test_booking_page_is_gone,
     ]
     if UNDER_PYTEST:

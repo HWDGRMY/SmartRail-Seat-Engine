@@ -30,89 +30,121 @@ from ..models import (
 )
 
 # ---------------------------------------------------------------------------
-# 人群类型目录（界面下拉 + 后端推导，唯一来源）
+# 人群目录（座位图/预制档案用）
 # ---------------------------------------------------------------------------
+#
+# **基础分组只有 5 类，与 ``composition.BASE_GROUP_FIELDS`` 完全一致**：
+# 成人 / 青少年 / 儿童 / 幼儿 / 婴儿。
+#
+# 曾经这里另立了一套 16 类（还自己加了"学生"），把年龄分组和
+# "孕妇（4-6个月）""视障（需导盲）"这类**特殊人群**平铺在一起 ——
+# 那是错的：需求方从未定义过"学生"这个分组，而孕妇与残疾是在
+# **基础分组之上**叠加的维度（`composition.py` 里就是独立维度，
+# 不计入总人数）。
+#
+# 因此现在：
+#   * 前 5 类是**基础分组**（``base_group`` 字段），是总人数的唯一来源；
+#   * 其余是绑定在某个基础分组上的**特殊人群档位**
+#     （``special`` / ``base_group`` 字段），供预制档案与座位图使用；
+#   * 票价优惠（如学生票）**不是人群分类**，是票价属性。
 
 PASSENGER_TYPES: tuple[dict[str, Any], ...] = (
+    # ---- 基础分组（5 类，总人数的唯一来源）----
     {
         "id": "adult", "label": "成人", "age": 35, "ticket": TicketType.ADULT,
         "needs_caregiver": False, "is_caregiver": True, "support": (),
         "price_ratio": 1.0, "desc": "满 18 周岁及以上",
-    },
-    {
-        "id": "student", "label": "学生", "age": 20, "ticket": TicketType.STUDENT,
-        "needs_caregiver": False, "is_caregiver": True, "support": (),
-        "price_ratio": 0.75, "desc": "持学生证，寒暑假可购学生票",
+        "base_group": "adult", "special": "",
     },
     {
         "id": "youth", "label": "青少年", "age": 16, "ticket": TicketType.CHILD,
         "needs_caregiver": False, "is_caregiver": False, "support": (),
         "price_ratio": 0.5, "desc": "满 14 周岁但未满 18 周岁，可独立购票",
+        "base_group": "youth", "special": "",
     },
     {
         "id": "child", "label": "儿童", "age": 9, "ticket": TicketType.CHILD,
         "needs_caregiver": True, "is_caregiver": False, "support": (),
         "price_ratio": 0.5, "desc": "满 4 周岁但未满 14 周岁，须成人陪同",
+        "base_group": "child", "special": "",
     },
     {
         "id": "toddler", "label": "幼儿", "age": 2, "ticket": TicketType.CHILD,
         "needs_caregiver": True, "is_caregiver": False,
         "support": (SupportNeed.TODDLER,),
         "price_ratio": 0.0, "desc": "满 1 周岁但未满 4 周岁，须成人陪同",
+        "base_group": "toddler", "special": "",
     },
     {
         "id": "infant", "label": "婴儿", "age": 0, "ticket": TicketType.CHILD,
         "needs_caregiver": True, "is_caregiver": False,
         "support": (SupportNeed.INFANT,),
         "price_ratio": 0.0, "desc": "未满 1 周岁，须成人陪同",
+        "base_group": "infant", "special": "",
     },
+    # ---- 基础分组之上的特殊人群档位 ----
     {
         "id": "elderly", "label": "老人", "age": 72, "ticket": TicketType.ADULT,
         "needs_caregiver": False, "is_caregiver": True,
         "support": (SupportNeed.ELDERLY,),
         "price_ratio": 1.0, "desc": "60 周岁以上，优先下铺/近车门",
+        "base_group": "adult", "special": "elderly",
+    },
+    {
+        "id": "student", "label": "学生（学生票）", "age": 20,
+        "ticket": TicketType.STUDENT,
+        "needs_caregiver": False, "is_caregiver": True, "support": (),
+        "price_ratio": 0.75, "desc": "按成人计价，凭学生证享学生票优惠",
+        "base_group": "adult", "special": "student",
     },
     {
         "id": "pregnant_early", "label": "孕妇（1-3个月）", "age": 30,
         "ticket": TicketType.ADULT, "needs_caregiver": False,
         "is_caregiver": True, "support": (), "price_ratio": 1.0,
         "desc": "可独立购票，不强制陪同",
+        "base_group": "adult", "special": "pregnant_early",
     },
     {
         "id": "pregnant_mid", "label": "孕妇（4-6个月）", "age": 30,
         "ticket": TicketType.ADULT, "needs_caregiver": False,
         "is_caregiver": True, "support": (), "price_ratio": 1.0,
         "desc": "可独立购票，不强制陪同",
+        "base_group": "adult", "special": "pregnant_mid",
     },
     {
         "id": "pregnant_late", "label": "孕妇（7-9个月）", "age": 30,
         "ticket": TicketType.ADULT, "needs_caregiver": True,
         "is_caregiver": False, "support": (SupportNeed.PREGNANT_LATE,),
         "price_ratio": 1.0, "desc": "近卫生间/过道；平台可配置是否强制陪同",
+        "base_group": "adult", "special": "pregnant_late",
     },
     {
         "id": "pregnant_term", "label": "孕妇（10个月/37周+）", "age": 30,
         "ticket": TicketType.ADULT, "needs_caregiver": True,
         "is_caregiver": False, "support": (SupportNeed.PREGNANT_LATE,),
         "price_ratio": 1.0, "desc": "必须重点旅客服务 + 至少 1 名成人陪同",
+        "base_group": "adult", "special": "pregnant_term",
     },
     {
         "id": "wheelchair", "label": "轮椅旅客", "age": 45,
         "ticket": TicketType.DISABLED_VETERAN, "needs_caregiver": False,
         "is_caregiver": False, "support": (SupportNeed.WHEELCHAIR,),
-        "price_ratio": 1.0, "desc": "硬约束匹配无障碍专区",
+        "price_ratio": 1.0, "desc": "硬约束匹配轮椅固定停放位",
+        "base_group": "adult", "special": "wheelchair",
     },
     {
         "id": "blind", "label": "视障旅客", "age": 40,
         "ticket": TicketType.DISABLED_VETERAN, "needs_caregiver": False,
         "is_caregiver": False, "support": (SupportNeed.INDEPENDENT_BLIND,),
         "price_ratio": 1.0, "desc": "独立视障：偏好过道/近车门，严禁强行匹配陪护",
+        "base_group": "adult", "special": "blind",
     },
     {
         "id": "blind_with_guide", "label": "视障（需导盲）", "age": 40,
         "ticket": TicketType.DISABLED_VETERAN, "needs_caregiver": True,
         "is_caregiver": False, "support": (SupportNeed.INDEPENDENT_BLIND,),
         "price_ratio": 1.0, "desc": "需导盲犬或引导服务，须陪同",
+        "base_group": "adult", "special": "blind_with_guide",
     },
     {
         "id": "intellectual", "label": "智力障碍", "age": 25,
@@ -120,14 +152,33 @@ PASSENGER_TYPES: tuple[dict[str, Any], ...] = (
         "is_caregiver": False,
         "support": (SupportNeed.INTELLECTUAL_DISABILITY,),
         "price_ratio": 1.0, "desc": "需照护，须陪同",
+        "base_group": "adult", "special": "intellectual",
+    },
+    {
+        "id": "child_quiet", "label": "儿童（安静）", "age": 9,
+        "ticket": TicketType.CHILD, "needs_caregiver": True,
+        "is_caregiver": False, "support": (), "price_ratio": 0.5,
+        "desc": "儿童细分维度：安静型，可坐静音车厢",
+        "base_group": "child", "special": "child_quiet",
+    },
+    {
+        "id": "child_noisy", "label": "儿童（吵闹）", "age": 7,
+        "ticket": TicketType.CHILD, "needs_caregiver": True,
+        "is_caregiver": False, "support": (), "price_ratio": 0.5,
+        "desc": "儿童细分维度：吵闹型，静音车厢对其排斥",
+        "base_group": "child", "special": "child_noisy",
     },
     {
         "id": "caregiver", "label": "照护人/陪同", "age": 40,
         "ticket": TicketType.ADULT, "needs_caregiver": False,
         "is_caregiver": True, "support": (), "price_ratio": 1.0,
         "desc": "健康成人，可与需照护者硬绑定",
+        "base_group": "adult", "special": "caregiver",
     },
 )
+
+#: 界面选择时的"基础分组"分组 id（与 ``composition.BASE_GROUP_IDS`` 一致）
+BASE_GROUP_IDS: tuple[str, ...] = ("adult", "youth", "child", "toddler", "infant")
 
 #: 乘客档案来源
 SOURCE_PRESET = "preset"
@@ -142,38 +193,40 @@ PASSENGER_TYPE_BY_ID: dict[str, dict[str, Any]] = {
 
 #: 界面选择的分组。
 #:
-#: **为什么这样分组**：早期把 16 种类型平铺给旅客看，里面并列出现了
-#: "成人 / 幼儿 / 孕妇（1-3个月）/ 孕妇（4-6个月）/ 孕妇（7-9个月）/
-#: 孕妇（10个月/37周+）/ 视障（需导盲）……" —— 旅客第一眼看到的是
-#: 一堆需要医学与无障碍知识才能选的选项，普通人只会困惑。
+#: **基础分组不能被界面随意改动** —— 它就是
+#: :data:`smartrail.composition.BASE_GROUP_FIELDS` 那 5 类
+#: （成人 / 青少年 / 儿童 / 幼儿 / 婴儿），是总人数的唯一来源。
+#: 界面只负责把它们展示出来。
 #:
-#: 真实的购票界面只有"成人 / 学生 / 儿童"这几档；孕妇按孕周、
-#: 残疾按类别确实需要区分（因为待遇不同），但它们属于**特殊服务**，
-#: 应当是"需要时才展开"的第二层，而不是和"成人"并列的第一层。
+#: 曾经的错误：这里另立了一套 16 类平铺（还自己加了"学生"），
+#: 把年龄分组与"孕妇（4-6个月）""视障（需导盲）"这类特殊人群混在一层。
+#: 正确的关系是：
 #:
-#: 因此分成：
-#:   * ``basic``      —— 常用（成人 / 学生 / 儿童 / 老人）
-#:   * ``pregnant``   —— 孕妇（按孕周细分）
-#:   * ``disabled``   —— 残疾旅客（按类别细分）
-#:   * ``companion``  —— 陪同人
+#:   基础分组（选人数） → 在其上叠加特殊人群（残疾 / 孕妇 / 儿童细分）
 #:
-#: ``basic=True`` 的分组在界面上直接平铺；其余分组收在"需要特别服务"里。
+#: 所以第二层按**维度**分组，而不是按"人群类型"平铺。
 PASSENGER_TYPE_GROUPS: tuple[dict[str, Any], ...] = (
-    {"id": "basic", "label": "常用", "basic": True,
-     "hint": "绝大多数旅客选这几种",
-     "types": ("adult", "student", "child", "elderly")},
-    {"id": "pregnant", "label": "孕妇", "basic": False,
+    {"id": "basic", "label": "基础分组", "basic": True,
+     "hint": "总人数只由这 5 类决定",
+     "types": BASE_GROUP_IDS},
+    {"id": "elderly", "label": "特殊人群 · 老年", "basic": False,
+     "hint": "叠加在基础分组之上，不改变总人数",
+     "types": ("elderly",)},
+    {"id": "pregnant", "label": "特殊人群 · 孕妇", "basic": False,
      "hint": "按孕周区分，晚期与足月需重点旅客服务",
      "types": ("pregnant_early", "pregnant_mid", "pregnant_late", "pregnant_term")},
-    {"id": "disabled", "label": "残疾旅客", "basic": False,
+    {"id": "disabled", "label": "特殊人群 · 残疾", "basic": False,
      "hint": "按类别区分，轮椅旅客硬约束匹配轮椅停放位",
      "types": ("wheelchair", "blind", "blind_with_guide", "intellectual")},
+    {"id": "child_sub", "label": "儿童细分", "basic": False,
+     "hint": "叠加在「儿童」之上，不改变总人数",
+     "types": ("child_quiet", "child_noisy")},
     {"id": "companion", "label": "陪同人", "basic": False,
      "hint": "健康成人，用于与需照护者绑定同车厢",
      "types": ("caregiver",)},
-    {"id": "minor", "label": "未成年细分", "basic": False,
-     "hint": "青少年可独立购票；幼儿与婴儿须成人陪同",
-     "types": ("youth", "toddler", "infant")},
+    {"id": "discount", "label": "票种（票价属性，不是人群）", "basic": False,
+     "hint": "按成人计价，仅影响票价",
+     "types": ("student",)},
 )
 
 
@@ -322,6 +375,12 @@ DEFAULT_PROFILES: tuple[dict[str, str], ...] = (
      "phone": "187****0569"},
     {"name": "何秀兰", "type_id": "caregiver", "id_card": "6204**********670",
      "phone": "186****0670"},
+    # 儿童细分维度（安静 / 吵闹）也各给一位：
+    # 这两个类型参与静音车厢的代价计算，开发者模式要能把它们放进订单里验证。
+    {"name": "林安然", "type_id": "child_quiet", "id_card": "6204**********781",
+     "phone": "185****0781"},
+    {"name": "赵小闹", "type_id": "child_noisy", "id_card": "6204**********892",
+     "phone": "184****0892"},
 )
 
 
@@ -450,6 +509,12 @@ def passenger_type_catalog() -> dict[str, Any]:
                 "needs_caregiver": item["needs_caregiver"],
                 "is_caregiver": item["is_caregiver"],
                 "support_needs": sorted(n.value for n in item["support"]),
+                # 归属的**基础分组**（总人数的唯一来源）与叠加维度名。
+                # 有了这两个字段，"这个类型是基础分组还是叠加维度"
+                # 才能被机器检查 —— 早期没有任何标记，于是
+                # "学生"被当成了基础分组也没人发现。
+                "base_group": item.get("base_group", ""),
+                "special": item.get("special", ""),
             }
             for item in PASSENGER_TYPES
         ],

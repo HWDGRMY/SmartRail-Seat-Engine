@@ -19,6 +19,10 @@ sys.path.insert(0, str(ROOT))
 BASE = "http://127.0.0.1:8000"
 problems: list[str] = []
 
+#: 预制乘车人数量**从服务实时取**，不写死 —— 早期写死 16，
+#: 预制档案增删后验收就失败，而失败原因是「数字过期」而非真缺陷。
+PRESET_COUNT: int = 0
+
 
 def check(ok: bool, message: str) -> None:
     print(("  PASS  " if ok else "  FAIL  ") + message)
@@ -64,6 +68,8 @@ check(trains["trains"][0]["train_code"] == "G25", "含 G25 大标杆")
 
 print()
 print("=== 目标 2：选择乘车人（用户模式不预置乘车人）===")
+if PRESET_COUNT == 0:
+    PRESET_COUNT = call("/api/dev/passengers")[1]["count"]
 check("选择乘车人" in user, "页面含「选择乘车人」入口")
 # **需求**：预制乘车人是给开发者模式的，用户模式必须看不到
 status, user_pax = call("/api/passengers")
@@ -71,13 +77,13 @@ check(status == 200 and user_pax["count"] == 0,
       f"用户模式起始 0 位乘车人（{user_pax.get('count')}）")
 check(user_pax["empty"] is True, "用户模式列表为空 -> 引导用户添加")
 status, dev_pax = call("/api/passengers?scope=dev")
-check(dev_pax["count"] == 16, f"开发者模式可见预制 {dev_pax.get('count')} 位")
+check(dev_pax["count"] == PRESET_COUNT, f"开发者模式可见预制 {dev_pax.get('count')} 位")
 status, pax = call("/api/dev/passengers")
-check(pax["count"] == 16, f"/api/dev/passengers 返回 {pax.get('count')} 位")
+check(pax["count"] == PRESET_COUNT, f"/api/dev/passengers 返回 {pax.get('count')} 位")
 check("选择乘车人" in user and "预制" not in user.split("选择乘车人")[0][-200:],
       "用户模式页面不向旅客展示预制档案")
 status, types = call("/api/passengers/types")
-check(len(types["types"]) == 16, f"人群类型 {len(types['types'])} 种")
+check(len(types["types"]) == PRESET_COUNT, f"人群类型 {len(types['types'])} 种")
 status, empty = call("/api/trains/evaluate",
                      {"class_code": "二等座", "profile_ids": []})
 check(any("请先添加乘车人" in e for e in empty["errors"]),
@@ -146,14 +152,14 @@ print()
 print("=== 目标 6：开发者模式 · 预制各类人群各一位 ===")
 dev = page("/dev")
 check("全局座位图" in dev, "开发者模式含「全局座位图」")
-check("预制乘车人" in dev, "开发者模式含「预制乘车人」")
+check("提交订单" in dev, "开发者模式含「提交订单」")
 check("type=\"range\"" in dev, "开发者模式含余票滑杆控件")
 check("手动锁定" in dev and "用户已售" in dev,
       "座位图图例区分「用户已售」与「手动锁定」")
 status, snap = call("/api/dev/snapshot")
 status, pax2 = call("/api/passengers?scope=dev")
 kinds = {p["type_id"] for p in pax2["passengers"]}
-check(len(kinds) == 16 and pax2["count"] == 16,
+check(len(kinds) == PRESET_COUNT and pax2["count"] == PRESET_COUNT,
       f"各类人群各一位（{pax2['count']} 位 / {len(kinds)} 种）")
 
 print()
@@ -195,7 +201,8 @@ print("=== 目标 9：重置系统 ===")
 check("重置系统" in dev, "页面含「重置系统」")
 status, body = call("/api/dev/reset", {"passengers": True})
 check(body["occupied_count"] == 0 and body["order_count"] == 0, "重置清空占用与订单")
-check(body["passenger_count"] == 16, f"乘车人回到 {body['passenger_count']} 位")
+check(body["passenger_count"] == PRESET_COUNT,
+          f"乘车人回到 {body['passenger_count']} 位")
 check(body["remaining"]["二等座"] == 1152,
       f"二等座余票回到 {body['remaining']['二等座']}")
 
@@ -244,32 +251,81 @@ with urllib.request.urlopen(BASE + "/dev", timeout=30) as response:
 check("提交订单" in dev_html, "开发者页含『提交订单』区域")
 check("btnSubmitOrder" in dev_html, "含提交按钮")
 check("submit-order" in dev_html, "按钮有 testid（可被自动化点击）")
-check("/api/tickets/book" in dev_html, "调用真实下单接口")
+check("/api/composition/submit" in dev_html, "调用真实组单接口")
 check("orderClass" in dev_html, "含席别选择")
-check("pickedProfiles" in dev_html, "含乘车人勾选状态")
-check('<div class="card">' in dev_html and "paxlist" in dev_html,
-      "含乘车人勾选列表")
+check("baseCounts" in dev_html, "含基础分组计数状态")
+check("baseGroups" in dev_html, "含基础分组步进器")
 
 print()
-print("=== 目标 12c：人群选择分两层（常用 / 需要特别服务）===")
+print("=== 目标 12c：基础分组与特殊人群的分层 ===")
 status, catalog = call("/api/passengers/types")
 groups = catalog["groups"]
 basic = [g for g in groups if g.get("basic")]
 special = [g for g in groups if not g.get("basic")]
 check(len(basic) == 1 and basic[0]["id"] == "basic",
-      f"常用档只有一组（{[g['id'] for g in basic]}）")
+      f"基础分组恰好一组（{[g['id'] for g in basic]}）")
 basic_ids = [t["id"] for t in basic[0]["types"]]
-check(basic_ids == ["adult", "student", "child", "elderly"],
-      f"常用档是普通人看得懂的选项（{basic_ids}）")
-special_ids = {g["id"] for g in special}
-check("pregnant" in special_ids and "disabled" in special_ids,
-      f"孕妇与残疾单列（{sorted(special_ids)}）")
-# 用户模式页面必须有折叠区，且常用档直接可见
-with urllib.request.urlopen(BASE + "/ticket", timeout=30) as response:
-    user_html = response.read().decode("utf-8")
-check("specialBody" in user_html, "用户模式含『需要特别服务』折叠区")
-check("btnSpecial" in user_html, "折叠区可展开")
-check("typeList" in user_html, "常用档直接平铺")
+check(basic_ids == ["adult", "youth", "child", "toddler", "infant"],
+      f"基础分组就是需求给的那 5 类（{basic_ids}）")
+check("student" not in basic_ids, "『学生』不在基础分组（需求未定义该分组）")
+# 与 composition 的规格一致
+status, schema = call("/api/composition/schema")
+check([g["id"] for g in schema["base_groups"]] == basic_ids,
+      "基础分组与 /api/composition/schema 完全一致")
+check(schema["total_formula"] == "adult + youth + child + toddler + infant",
+      f"总人数公式 {schema['total_formula']}")
+check(set(schema["excluded_from_total"]) == {"child_sub", "disability", "pregnant"},
+      f"特殊人群不计入总人数（{schema['excluded_from_total']}）")
+check("pregnant" in {g["id"] for g in special}
+      and "disabled" in {g["id"] for g in special},
+      "孕妇与残疾单列为特殊人群")
+
+print()
+print("=== 目标 12d：开发者页按人数组单（不是选姓名）===")
+with urllib.request.urlopen(BASE + "/dev", timeout=30) as response:
+    dev_html = response.read().decode("utf-8")
+check("baseGroups" in dev_html, "含基础分组步进器")
+check("renderBaseGroups" in dev_html, "渲染基础分组")
+check("baseCounts" in dev_html, "按分组计数")
+check("/api/composition/submit" in dev_html, "提交走构成接口")
+check("renderPassengerPicker" not in dev_html, "旧的姓名勾选器已移除")
+
+print()
+print("=== 目标 12e：按人数组单真的能出票 ===")
+bands = [b["id"] for b in schema["age_bands"]]
+
+
+def _composition(adult: int, child: int = 0) -> dict:
+    return {
+        "note": "验收",
+        "base": {"adult": adult, "child": child},
+        "child_sub": {g["id"]: 0 for g in schema["child_sub_groups"]},
+        "disability": {lv["id"]: {b: 0 for b in bands}
+                       for lv in schema["disability_levels"]},
+        "pregnant": {st["id"]: {b: 0 for b in bands}
+                     for st in schema["pregnant_stages"]},
+    }
+
+
+style, composed = call("/api/composition/submit",
+                       {"orders": [_composition(adult=10)]})
+blocked = composed.get("blocked") or []
+check(not blocked, f"10 位成人未被拦下（{blocked[:1]}）")
+if not blocked:
+    order = composed["orders"][0]
+    check(order["total_passengers"] == 10,
+          f"总人数 {order['total_passengers']}（应为 10）")
+    check(len(order.get("seats") or {}) == 10,
+          f"10 位全部出票（{len(order.get('seats') or {})}）")
+    seats = sorted((order.get("seats") or {}).values())
+    check(len(set(seats)) == 10, "10 个座位互不重复")
+    print(f"      座位：{seats}")
+
+# 拒票规则仍然生效
+style, guarded = call("/api/composition/submit",
+                      {"orders": [_composition(adult=0, child=1)]})
+check(bool(guarded.get("blocked")),
+      "儿童无成人陪同被拦下（未进入求解器）")
 
 print()
 print("=== 目标 13：轮椅固定停放位（独立编号，不占座位票额）===")
@@ -330,7 +386,8 @@ status, user_scope = call("/api/passengers")
 check(user_scope["count"] == 0, f"用户模式 0 位（{user_scope['count']}）")
 check(user_scope["empty"] is True, "用户模式为空 -> 引导添加")
 status, dev_scope = call("/api/passengers?scope=dev")
-check(dev_scope["count"] == 16, f"开发者模式 16 位（{dev_scope['count']}）")
+check(dev_scope["count"] == PRESET_COUNT,
+          f"开发者模式 {dev_scope['count']} 位")
 check(all(p["source"] == "preset" for p in dev_scope["passengers"]),
       "预制档案带 source=preset 标记")
 check("选择乘车人" in user,

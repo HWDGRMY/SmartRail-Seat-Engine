@@ -36,7 +36,7 @@ REQUIRED_BUTTONS: dict[str, list[str]] = {
         "btnAddPax", "btnAddCancel", "btnAddOk", "btnSpecial", "btnSubmit",
     ],
     "developer.html": [
-        "btnReset", "btnSubmitOrder", "btnPickAll", "btnPickNone",
+        "btnReset", "btnSubmitOrder", "btnPickNone", "btnSpecialToggle",
     ],
 }
 
