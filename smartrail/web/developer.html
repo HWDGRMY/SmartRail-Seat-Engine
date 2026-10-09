@@ -88,7 +88,24 @@
     flex:0 0 auto;font-size:9px;display:flex;align-items:center;justify-content:center;
     color:#98a2ae;position:relative;cursor:default}
   .seat.preset{background:#c9d4e0;border-color:#b7c4d3;color:#5a6a7c}
-  /* 订单配色见下方 .seat.orderc —— 已售座位按订单号取色 */
+  /* 订单配色：同一订单一个颜色，不同订单不同颜色。
+     需求："不同订单用不同颜色在座位图上标注"。
+     颜色由 JS 以内联 CSS 变量给出（--oc-bg/--oc-bd/--oc-fg），
+     这里只负责消费它们 —— 少了这条规则，座位会拿到 class 和变量，
+     但**没有任何样式生效**，看上去还是默认的白底灰字。 */
+  .seat.orderc{background:var(--oc-bg,#9fb2c6);
+    border-color:var(--oc-bd,#8ea3ba);color:var(--oc-fg,#fff);
+    font-weight:600}
+  /* 停放位额外描边（独立编号，不占座位票额） */
+  .seat.orderc.bay{box-shadow:inset 0 0 0 2px var(--oc-bd,#8ea3ba)}
+  /* 订单图例：座位图上方说明"哪个颜色是哪个订单" */
+  .legend-order{display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+    margin:7px 0}
+  .legend-order .lg{display:flex;align-items:center;gap:5px;font-size:11px;
+    color:var(--muted)}
+  .legend-order .sw{width:13px;height:13px;border-radius:3px;
+    border:1px solid #cfd6de;flex:0 0 auto}
+  .seat.manual{background:#d9c7a8;border-color:#c8b394;color:#6b5a3d}
   .seat.quiet{outline:2px solid var(--quiet);outline-offset:-2px}
   .seat.access{box-shadow:inset 0 -3px 0 var(--access)}
   .seat.bayslot{background:#e6f7f7;border-color:var(--access);color:#0f7d7d;

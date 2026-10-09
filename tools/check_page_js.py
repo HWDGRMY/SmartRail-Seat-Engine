@@ -43,6 +43,28 @@ REQUIRED_BUTTONS: dict[str, list[str]] = {
 #: 需要真实请求后端；没有服务时跳过这些页面
 NEEDS_BACKEND = {"ticketing.html", "developer.html"}
 
+#: **CSS 契约**：JS 给出的 class / 内联 CSS 变量，必须有规则真的消费它们。
+#:
+#: 真实事故：座位图"不同订单用不同颜色标注"做完之后页面上**毫无变化** ——
+#: JS 明明给座位加了 `orderc` class 和内联 `--oc-bg/--oc-bd/--oc-fg`，
+#: 但样式表里**根本没有 `.seat.orderc` 这条规则**（重构时只留下了注释）。
+#: 之前的检查只看 JS 启动与按钮绑定，**从不看 CSS**，所以这类问题
+#: 一路绿灯通过。
+#:
+#: 这里用"选择器 -> 必须出现的声明片段"的形式把它钉住。
+REQUIRED_CSS: dict[str, list[tuple[str, list[str]]]] = {
+    "developer.html": [
+        # 按订单着色：必须消费 JS 传进来的三个变量
+        (".seat.orderc", ["background:var(--oc-bg", "border-color:var(--oc-bd",
+                          "color:var(--oc-fg"]),
+        # 三种来源各自的底色都要有规则（否则座位图分不出已售/锁定/预设）
+        (".seat.preset", ["background:"]),
+        (".seat.manual", ["background:"]),
+        # 订单图例的色块
+        (".legend-order", []),
+    ],
+}
+
 HARNESS = r"""
 const fs = require('fs');
 const html = fs.readFileSync(process.argv[2], 'utf8');
@@ -195,6 +217,32 @@ def run_page(path: Path, buttons: list[str], base: str) -> dict:
         return {"ok": False, "fatal": output[:800]}
 
 
+def css_problems(html: str, rules: list[tuple[str, list[str]]]) -> list[str]:
+    """检查 CSS 契约：选择器存在，且每个必需声明片段都出现。
+
+    只做"字符串存在性"检查 —— 够用，因为要防的是**整条规则被删掉**
+    这一类回归（真发生过：`.seat.orderc` 只剩注释）。
+    """
+    style = ""
+    if "<style>" in html and "</style>" in html:
+        style = html[html.index("<style>") + len("<style>"):html.rindex("</style>")]
+    if not style:
+        return ["页面没有 <style> 块"]
+    problems: list[str] = []
+    for selector, declarations in rules:
+        if selector not in style:
+            problems.append(f"缺少样式规则 {selector}")
+            continue
+        # 截出这条规则的声明体（到下一个 } 为止）
+        start = style.index(selector)
+        end = style.find("}", start)
+        body = style[start:end if end != -1 else len(style)]
+        for declaration in declarations:
+            if declaration not in body:
+                problems.append(f"{selector} 缺声明 {declaration}")
+    return problems
+
+
 def main(argv: list[str]) -> int:
     base = "http://127.0.0.1:8000"
     targets = argv or [name for name in REQUIRED_BUTTONS]
@@ -217,6 +265,12 @@ def main(argv: list[str]) -> int:
         referenced = set(re.findall(r'\$\("([^"]+)"\)', script))
         referenced |= set(re.findall(r'getElementById\("([^"]+)"\)', script))
         missing = sorted(referenced - ids)
+        # CSS 契约（不需要后端）
+        css_bad = css_problems(html, REQUIRED_CSS.get(path.name, []))
+        if css_bad:
+            for item in css_bad[:6]:
+                print(f"    CSS 问题：{item}")
+                failures.append(f"{path.name} {item}")
 
         if path.name in NEEDS_BACKEND and not alive:
             print(f"{path.name}：跳过执行检查（后端离线）"
