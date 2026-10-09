@@ -271,8 +271,8 @@ def test_manual_order_submission() -> None:
         "逐单返回分档与原因",
     )
 
-    # 2) 无法满足的订单必须有明确提示
-    #    单次请求内自足：先用 7 张轮椅订单占满专区（10 座），再放两张必然溢出的单。
+    # 2) **出票优先**：特殊席位不够时照常出票 + 生成提示/询问，而不是拒票。
+    #    这是产品的第一原则 —— 拒票（候补）只应发生在"全车确实没有空座"时。
     orders = [
         {
             "order_id": f"FILL-{n}",
@@ -281,55 +281,52 @@ def test_manual_order_submission() -> None:
         for n in range(1, 8)
     ]
     orders.append(
-        {"order_id": "BAD-ONE", "passengers": [{"key": "wheelchair"}, {"key": "caregiver"}]}
-    )
-    orders.append(
-        {
-            "order_id": "BAD-MANY",
-            "passengers": [{"key": "wheelchair"}] * 4 + [{"key": "caregiver"}] * 4,
-        }
+        {"order_id": "LATE", "passengers": [{"key": "wheelchair"}, {"key": "caregiver"}]}
     )
     overflow = service.submit_orders({"orders": orders})
     summary = overflow["summary"]
     check(
-        summary["impossible_orders"] >= 1,
-        f"识别出无法满足的订单（{summary['impossible_orders']} 张）",
+        summary["seated_passengers"] == summary["requested_passengers"],
+        f"专区售罄后仍然全员出票"
+        f"（{summary['seated_passengers']}/{summary['requested_passengers']}）",
     )
-    reasons = " ".join(overflow["unmet_orders"][0]["reasons"])
+    check(summary["waitlisted_passengers"] == 0, "没有因专区售罄而候补")
+    check(summary["impossible_orders"] == 0, "没有订单被判『无座可发』")
+    late = [item for item in overflow["orders"] if item["order_id"] == "LATE"][0]
+    check(late["seated"] == late["requested"], "溢出的轮椅订单也出票了")
     check(
-        "无障碍专区" in reasons or "超过单张订单上限" in reasons,
-        f"原因具体可操作（{reasons[:44]}…）",
+        late["level"] == "action_required",
+        f"分档为『已出票，需现场处理』（{late['level']}）",
     )
-    bad_ids = {item["order_id"] for item in overflow["unmet_orders"]}
+    notices = " ".join(n["message"] for n in late["notices"])
+    check("无障碍专区已满" in notices, f"生成了站车协助提示（{notices[:40]}…）")
     check(
-        "BAD-MANY" in bad_ids,
-        f"超限的大单被标为无法满足（{[i['order_id'] for i in overflow['unmet_orders']]}）",
+        any(item["order_id"] == "LATE" for item in overflow["confirmations"]),
+        "同时给出需要用户确认的问题（提示 / 询问后出票）",
     )
-    # 结构性不可行的订单必须**直接判定**，不去跑求解器 ——
-    # 实测"一张单 4 位轮椅 + 多位家属"会让候选组合枚举卡死
-    # （HTTP 请求超时那种死法，不是"慢"）。
-    huge = [item for item in overflow["orders"] if item["order_id"] == "BAD-MANY"][0]
-    check(huge["elapsed_ms"] == 0.0, "结构性不可行的订单不求值（避免卡死）")
-    check(huge["level"] == "impossible", f"分档为『无法满足』（{huge['level']}）")
+
+    # 3) 单张订单轮椅人数超建议上限：仍然出票，但要询问
+    quota = service.submit_orders(
+        {"orders": [{"order_id": "W8", "passengers": [{"key": "wheelchair"}] * 8}]}
+    )
+    wide = quota["orders"][0]
+    check(wide["seated"] == 8, f"8 位轮椅一单仍然全部出票（{wide['seated']}/8）")
+    check(bool(wide["question"]), "给出了需要用户确认的问题")
     check(
-        huge["feasibility"]["code"] == "TOO_MANY_WHEELCHAIRS",
-        f"原因码为 TOO_MANY_WHEELCHAIRS（{huge['feasibility']['code']}）",
-    )
-    # 而 2 位轮椅的单应当**可以**满足（上限之内）
-    ok_pair = service.submit_orders(
-        {
-            "orders": [
-                {
-                    "order_id": "PAIR",
-                    "passengers": [{"key": "wheelchair"}] * 2 + [{"key": "caregiver"}] * 2,
-                }
-            ]
-        }
+        wide["feasibility"]["code"] in ("WHEELCHAIR_OVER_QUOTA", "NO_WHEELCHAIR_SLOT"),
+        f"原因码正确（{wide['feasibility']['code']}）",
     )
     check(
-        ok_pair["orders"][0]["feasibility"]["feasible"],
-        "2 位轮椅（上限之内）判定为可满足",
+        quota["summary"]["tier0_violations"] == 0,
+        f"Tier 0 仍为 0（{quota['summary']['tier0_violations']}）",
     )
+
+    # 4) 正常单不应产生多余的询问
+    normal = service.submit_orders(
+        {"orders": [{"order_id": "NORMAL", "passengers": [{"key": "adult"}]}]}
+    )
+    check(normal["orders"][0]["level"] == "fulfilled", "正常单为『全部出票』")
+    check(not normal["confirmations"], "正常单不产生确认询问")
 
 
 def test_page_has_concurrent_ui() -> None:

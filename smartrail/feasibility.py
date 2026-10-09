@@ -28,40 +28,50 @@ from .models import BondType, Order, Seat, Solution, SupportNeed
 
 # 结果分档：让"满足 / 部分满足 / 需现场处理 / 无法满足"一眼可分
 OUTCOME_LEVELS: dict[str, str] = {
-    "fulfilled": "完全满足",
-    "partial": "部分满足",
+    "fulfilled": "全部出票",
+    "confirmed": "已出票（用户已确认例外）",
     "action_required": "已出票，需现场处理",
-    "impossible": "无法满足",
+    "partial": "部分出票，其余候补",
+    "impossible": "无座可发（全车已满）",
 }
 
 # 无法满足的原因码
 FEASIBILITY_CODES: dict[str, str] = {
     "OK": "可满足",
-    "ZONE_TOO_SMALL": "无障碍专区座位数少于本单轮椅旅客人数",
-    "NO_WHEELCHAIR_SLOT": "当前无障碍专区余票不足，本单轮椅旅客无法安排",
-    "TOO_MANY_WHEELCHAIRS": "单张订单的轮椅旅客人数超过上限，应拆分为多张订单",
-    "CARRIAGE_CAPACITY": "找不到能容纳整单人数的车厢",
-    "NO_SEATS": "全车余票不足",
-    "HARD_BOND_INFEASIBLE": "硬绑定要求同车厢，但当前余票分布无法同时容纳",
-    "MIXED_CLASS": "订单内坐席等级不一致，无法安排在同一车厢",
+    "NO_SEATS": "全车余票不足（唯一会候补的情形）",
+    "NO_WHEELCHAIR_SLOT": "无障碍专区不足，已出票并转站车协助",
+    "WHEELCHAIR_OVER_QUOTA": "单张订单轮椅旅客偏多，已出票（超出者坐普通座位）",
+    "HARD_BOND_INFEASIBLE": "难以全部同车厢，已出票并生成现场调剂提示",
 }
 
 
 @dataclass
 class OrderFeasibility:
-    """一张订单的可行性结论。"""
+    """一张订单的可行性结论。
+
+    **默认全部可出票**。只有"全车真的一个空座都没有"才会 ``blocking``；
+    其余情况一律是 ``advisory``（可出票，但有需要告知/确认的事），
+    由 :attr:`question` 交给用户确认。
+    """
 
     order_id: str
     code: str = "OK"
     feasible: bool = True
     severity: str = "info"
-    """``info`` / ``warning`` / ``blocking``。"""
+    """``info``（无特殊情况）/ ``advisory``（可出票，但需提示或确认）/
+    ``blocking``（确实无座可发，只能候补）。"""
     message: str = ""
     details: list[str] = field(default_factory=list)
+    question: str = ""
+    """需要**询问用户**的问题（有值时前端应弹出确认，而不是直接拒票）。"""
     wheelchair_count: int = 0
     zone_available: int = 0
     passengers: int = 0
     same_carriage_required: bool = False
+
+    @property
+    def needs_confirmation(self) -> bool:
+        return bool(self.question)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -71,6 +81,8 @@ class OrderFeasibility:
             "severity": self.severity,
             "message": self.message,
             "details": list(self.details),
+            "question": self.question,
+            "needs_confirmation": self.needs_confirmation,
             "wheelchair_count": self.wheelchair_count,
             "zone_available": self.zone_available,
             "passengers": self.passengers,
@@ -93,11 +105,15 @@ def analyse_order(
     occupied: Iterable[str] = (),
     config: Any | None = None,
 ) -> OrderFeasibility:
-    """判断一张订单**在结构性意义上**能否被满足。
+    """判断一张订单**会遇到什么情况**，以及是否需要向用户确认。
 
-    只看硬约束，不预测具体方案：
-    轮椅旅客需要无障碍专区座位；硬绑定需要同车厢；人数不能超过车厢容量；
-    单张订单的轮椅旅客人数不能超过专区配额。
+    出票优先是本引擎的第一原则（见 :mod:`smartrail.config` 的"出票策略"段）：
+
+    * **只有"全车无空座"才 ``blocking``**（这时的候补是事实，不是策略）；
+    * 特殊席位（无障碍专区、同车厢相邻）不够时**照常出票**，
+      转为 ``advisory`` + 一条可执行提示；
+    * 需要用户拍板的情形给出 :attr:`OrderFeasibility.question`，
+      由调用方询问后再出票 —— 而不是替用户拒绝。
     """
     if config is None:
         from .config import DEFAULT_CONFIG as config  # noqa: PLC0415
@@ -117,85 +133,92 @@ def analyse_order(
         same_carriage_required=same_carriage,
     )
 
-    limit = int(getattr(config, "max_wheelchairs_per_order", 2))
-    if wheelchair_count > limit:
-        result.code = "TOO_MANY_WHEELCHAIRS"
-        result.feasible = False
-        result.severity = "blocking"
-        result.message = (
-            f"本单有 {wheelchair_count} 位轮椅旅客，超过单张订单上限（{limit} 位）"
-            f" —— 请拆成多张订单（每位轮椅旅客各自与其陪同人一起下单）。"
-        )
-        result.details.append(
-            "无障碍专区只有 10 座，单张订单最多占用一半；多位轮椅旅客分别下单"
-            "既能保证每位都有专区座位，也避免把专区一次吃光。"
-        )
-        return result
-
-    if not free:
-        result.code = "NO_SEATS"
-        result.feasible = False
-        result.severity = "blocking"
-        result.message = "全车已无余票，本单无法出票。"
-        return result
-
-    if wheelchair_count and len(zone_free) < wheelchair_count:
-        result.code = "NO_WHEELCHAIR_SLOT"
-        result.feasible = False
-        result.severity = "blocking"
-        result.message = (
-            f"本单有 {wheelchair_count} 位轮椅旅客，但无障碍专区仅剩 "
-            f"{len(zone_free)} 个空位 —— 无法满足，请改签其他车次或减少轮椅旅客人数。"
-        )
-        result.details.append(
-            "无障碍专区为轮椅旅客的硬性要求（Tier 0），不可用普通座位替代。"
-        )
-        return result
-
-    # 「同车厢能装下吗」——这一条**必须有**。
-    # 早期只检查了"专区座位够不够"，于是"4 位轮椅 + 4 位家属"这种单被判成
-    # "可满足"（专区剩 7 个 >= 4 个轮椅），实际求解时却因为**一节车厢装不下
-    # 整单 8 人**而全部候补。判成"可满足"再失败，比直接说"不能满足"更糟：
-    # 用户拿到的是一串内部编号，而不是可操作的原因。
     per_carriage: dict[int, int] = {}
     for seat in free:
         per_carriage[seat.carriage] = per_carriage.get(seat.carriage, 0) + 1
     best_carriage = max(per_carriage.values(), default=0)
-    result.details.append(
-        f"当前最空的单个车厢余票 {best_carriage} 个"
-        + ("（本单要求同车厢）" if same_carriage else "")
-    )
+    result.details.append(f"当前最空的单个车厢余票 {best_carriage} 个")
+    result.details.append(f"无障碍专区余票 {len(zone_free)} 个")
 
+    # ---- 唯一真正"拒票"的情形：全车确实没有空座 ----
+    if not free:
+        result.code = "NO_SEATS"
+        result.feasible = False
+        result.severity = "blocking"
+        result.message = "全车已无余票，本单只能候补。"
+        return result
     if len(free) < len(order.passengers):
         result.code = "NO_SEATS"
         result.feasible = False
         result.severity = "blocking"
         result.message = (
-            f"全车余票 {len(free)} 个，少于本单 {len(order.passengers)} 人 —— 无法全部出票。"
+            f"全车余票 {len(free)} 个，少于本单 {len(order.passengers)} 人 —— "
+            f"只能部分出票，其余候补。"
         )
         return result
 
-    if same_carriage and best_carriage < len(order.passengers):
-        result.code = "HARD_BOND_INFEASIBLE"
-        result.feasible = False
-        result.severity = "warning"
-        # 区分两种情形，给出的建议完全不同
-        if wheelchair_count:
-            result.message = (
-                f"本单 {len(order.passengers)} 人且含 {wheelchair_count} 位轮椅旅客，"
-                f"要求同车厢；无障碍专区剩 {len(zone_free)} 个空位、"
-                f"最空的单个车厢余票 {best_carriage} 个，装不下整单 —— "
-                f"建议拆成多张订单（轮椅旅客与家属分开下单）或改签其他车次。"
+    # ---- 以下全部"可出票"，只是需要提示或询问 ----
+
+    # 1) 单张订单轮椅人数超过专区配额：照常出票，超出部分坐普通座位
+    limit = int(getattr(config, "max_wheelchairs_per_order", 2))
+    if wheelchair_count > limit:
+        result.code = "WHEELCHAIR_OVER_QUOTA"
+        result.severity = "advisory"
+        result.message = (
+            f"本单有 {wheelchair_count} 位轮椅旅客，超过单张订单建议上限（{limit} 位）："
+            f"**可以出票**，但无障碍专区座位可能不够，超出者将安排普通座位并转站车协助。"
+        )
+        result.question = (
+            f"本单 {wheelchair_count} 位轮椅旅客，无障碍专区只有 10 座"
+            f"（单张订单建议不超过 {limit} 位）。是否仍然出票？"
+            f"（超出者坐普通座位，列车员协助上下车）"
+        )
+        result.details.append(
+            "若希望每位轮椅旅客都有专区座位，可拆成多张订单分别下单。"
+        )
+        # 不 return：继续检查专区余量，把更具体的情况也带上
+
+    # 2) 专区余票不足：照常出票 + 站车协助（这是运营例外，不是拒票理由）
+    if wheelchair_count and len(zone_free) < wheelchair_count:
+        result.code = "NO_WHEELCHAIR_SLOT"
+        result.severity = "advisory"
+        short = wheelchair_count - len(zone_free)
+        result.message = (
+            f"本单有 {wheelchair_count} 位轮椅旅客，无障碍专区仅剩 {len(zone_free)} 个空位："
+            f"**仍然出票**，其中 {short} 位将安排普通座位，并生成站车协助提示。"
+        )
+        if not result.question:
+            result.question = (
+                f"无障碍专区只剩 {len(zone_free)} 个空位，本单有 {wheelchair_count} 位"
+                f"轮椅旅客。是否接受『照常出票 + 站车协助』？"
             )
-        else:
-            result.message = (
-                f"本单 {len(order.passengers)} 人要求同车厢，"
-                f"但当前最空的单个车厢只剩 {best_carriage} 个空位 —— "
-                f"建议拆成多张订单，或把绑定强度改为『软绑定』。"
-            )
+        result.details.append(
+            "专区的空位会优先留给轮椅旅客；不足的部分发给普通座位并通知列车员协助。"
+        )
         return result
 
-    result.message = "可满足"
+    # 3) 要求同车厢但最空的车厢也装不下：软化为"尽量同车厢"，照常出票
+    if same_carriage and best_carriage < len(order.passengers):
+        result.code = "HARD_BOND_INFEASIBLE"
+        result.severity = "advisory"
+        reason = (
+            f"且含 {wheelchair_count} 位轮椅旅客" if wheelchair_count else ""
+        )
+        result.message = (
+            f"本单 {len(order.passengers)} 人{reason}、要求同车厢，"
+            f"但当前最空的单个车厢只剩 {best_carriage} 个空位：**仍然出票**，"
+            f"系统会尽量把人放在同一车厢，并在无法做到时生成现场调剂提示。"
+        )
+        if not result.question:
+            result.question = (
+                f"本单 {len(order.passengers)} 人要求同车厢，但最空的车厢只剩 "
+                f"{best_carriage} 个空位。是否接受『先出票、上车后找列车员调剂』？"
+            )
+        result.details.append("也可拆成多张订单，或把绑定强度改为『软绑定』。")
+        return result
+
+    if result.severity == "info":
+        result.message = "可满足"
     return result
 
 
@@ -211,24 +234,28 @@ def outcome_summary(
     notices = [notice.to_dict() for notice in solution.notices]
     hard_violations = len(solution.hard_violations)
 
-    if feasibility is not None and not feasibility.feasible and seated == 0:
-        level = "impossible"
-    elif seated == 0:
+    # 分档原则：**先把"票发出去了没有"说清楚**，再说例外。
+    # 早期把"专区不足"一律算作"无法满足"，与"出票优先"原则直接冲突 ——
+    # 明明还有 800 多个空座，却告诉用户"无法满足"。
+    has_confirmation = bool(feasibility and feasibility.needs_confirmation)
+    if seated == 0:
         level = "impossible"
     elif waitlisted or hard_violations:
         level = "partial"
     elif any(notice["level"] == "action" for notice in notices):
         level = "action_required"
+    elif has_confirmation:
+        level = "confirmed"
     else:
         level = "fulfilled"
 
     reasons: list[str] = []
-    # 顺序有讲究：**可行性原因排在最前**，因为它才是可操作的那条。
+    # 顺序有讲究：**可行性说明排在最前**，因为它才是可操作的那条。
     # 早期把"N 位旅客未出票：编号列表"排在前面，用户看到一串内部 ID
     # 却不知道该怎么办 —— 实测验收时被指出"提示没用"。
-    if feasibility is not None and not feasibility.feasible:
+    if feasibility is not None and feasibility.message:
         reasons.append(feasibility.message)
-    if waitlisted and not (feasibility is not None and not feasibility.feasible):
+    if waitlisted:
         reasons.append(f"{len(waitlisted)} 位旅客未出票：{'、'.join(waitlisted)}")
     for notice in notices:
         if notice["level"] in ("action", "attention"):
@@ -247,6 +274,7 @@ def outcome_summary(
         "reasons": reasons,
         "notices": notices,
         "feasibility": feasibility.to_dict() if feasibility else None,
+        "question": feasibility.question if feasibility else "",
     }
 
 

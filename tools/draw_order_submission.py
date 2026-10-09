@@ -47,8 +47,11 @@ OK = (46, 171, 91)
 WARN = (230, 162, 60)
 BAD = (229, 80, 74)
 LEVEL_COLOR = {
-    "fulfilled": OK, "partial": WARN, "action_required": (194, 112, 58),
-    "impossible": BAD,
+    "fulfilled": (46, 171, 91),
+    "confirmed": (31, 139, 145),
+    "action_required": (194, 112, 58),
+    "partial": (230, 162, 60),
+    "impossible": (229, 80, 74),
 }
 
 # 用户构造的订单：既有正常单，也有必然无法满足的单
@@ -65,7 +68,7 @@ ORDERS = [
      "passengers": [{"key": "infant"}, {"key": "caregiver"}]},
     {"order_id": "ORD-6", "note": "视障（需导盲）+ 同伴",
      "passengers": [{"key": "blind_with_guide"}, {"key": "caregiver"}]},
-    {"order_id": "ORD-7", "note": "8 位轮椅一单（应报无法满足）",
+    {"order_id": "ORD-7", "note": "8 位轮椅（专区不够，仍出票 + 询问）",
      "passengers": [{"key": "wheelchair"}] * 8},
 ]
 
@@ -143,16 +146,36 @@ def main() -> int:
         draw.text((x + 12, y + 22), label, font=font(12), fill=MUTED)
         draw.text((x + 12, y + 44), value, font=font(19, True), fill=color)
 
-    # ---- 未满足订单（重点展示 ✗） ----
+    # ---- 需要确认的例外 / 需要现场处理的订单 ----
     y += 118 + 16
+    confirmations = result.get("confirmations") or []
     unmet = result["unmet_orders"]
-    panel_h = 40 + max(1, len(unmet)) * 62
+    rows = len(confirmations) + len(unmet)
+    panel_h = 40 + max(1, rows) * 62
     draw.rounded_rectangle([24, y, W - 24, y + panel_h], 10, fill=CARD)
-    draw.text((40, y + 13), f"未满足订单（{len(unmet)} 张）—— 明确告出原因",
-              font=font(15, True), fill=BAD if unmet else OK)
+    draw.text(
+        (40, y + 13),
+        f"需要确认的例外 {len(confirmations)} 张 · 需要现场处理 {len(unmet)} 张"
+        " —— 票已出，例外已说明",
+        font=font(15, True),
+        fill=(194, 112, 58) if rows else OK,
+    )
     uy = y + 42
-    if not unmet:
-        draw.text((40, uy), "全部订单都被满足，无需现场处理。", font=font(13), fill=OK)
+    if not rows:
+        draw.text((40, uy), "全部订单直接出票，无需确认或现场处理。",
+                  font=font(13), fill=OK)
+    for item in confirmations:
+        draw.rectangle([40, uy, 44, uy + 50], fill=(194, 112, 58))
+        draw.text((54, uy), f"？ {item['order_id']}", font=font(13, True), fill=INK)
+        meta = (f"已出票 {item['seated']}/{item['requested']} 人"
+                + (f" · 原因码 {item['code']}" if item.get("code") else ""))
+        tw = draw.textlength(meta, font=font(11.5))
+        draw.text((W - 40 - tw, uy + 1), meta, font=font(11.5), fill=MUTED)
+        question = item.get("question") or ""
+        draw.text((54, uy + 19), question[:64], font=font(11.5), fill=(138, 74, 28))
+        if len(question) > 64:
+            draw.text((54, uy + 34), question[64:128], font=font(11.5), fill=(138, 74, 28))
+        uy += 62
     for item in unmet:
         color = LEVEL_COLOR.get(item["level"], WARN)
         draw.rectangle([40, uy, 44, uy + 50], fill=color)

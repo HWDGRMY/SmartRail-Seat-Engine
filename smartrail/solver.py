@@ -334,8 +334,57 @@ class SolverTables:
         # 再兜一层：任何出口都必须满足设施硬约束。
         # 不同路径（排内窗口 / size>=5 兜底 / 跨厢）各自过滤容易漏，统一在这里收口。
         out = self._enforce_facility_constraints(unit, out)
+        if not out and not scored and not fallback:
+            # 最后兜底：**按人构造**一个组合。
+            # 为什么必须有这一层：`_carriage_combos` 的第一层是"整排连续窗口"，
+            # 而二等座一排只有 5 座 —— 8 人单元**永远**窗口不出来，于是候选池为空。
+            # 空候选池会一路退化成"整单候补"，即使全车还有 895 个空座（实测）。
+            out = self._compose_fallback_combos(unit)
         self._unit_cache[key] = out
         return out
+
+    def _compose_fallback_combos(
+        self, unit: PassengerUnit
+    ) -> list[tuple[tuple[int, ...], float]]:
+        """按**每位乘客的需求**直接拼出同车厢组合（最后兜底）。
+
+        规则：先保证轮椅旅客拿到无障碍专区座位（专区不够时按"出票优先"
+        发给普通座位），再用每位乘客个体分最高的座位补齐其余人。
+        """
+        size = unit.size
+        if size == 0 or size > len(self.seats):
+            return []
+        zone_slots = [i for i, seat in enumerate(self.seats) if seat.in_accessible_zone()]
+        out: list[tuple[tuple[int, ...], float]] = []
+        for carriage, slots in self.by_carriage.items():
+            if len(slots) < size:
+                continue
+            slot_set = set(slots)
+            taken: set[int] = set()
+            combo: list[int] = []
+            for passenger in unit.passengers:
+                row = self.fs.row(passenger.passenger_id)
+                if passenger.is_mobility_impaired:
+                    # 优先专区；专区不足时退到普通座位（出票优先）
+                    pool = [s for s in zone_slots if s in slot_set and s not in taken]
+                else:
+                    pool = []
+                if not pool:
+                    pool = [s for s in slots if s not in taken]
+                if not pool:
+                    break
+                pick = max(pool, key=lambda slot: row[slot])
+                taken.add(pick)
+                combo.append(pick)
+            if len(combo) != size:
+                continue
+            value = sum(
+                self.fs.row(pid)[slot]
+                for pid, slot in zip([p.passenger_id for p in unit.passengers], combo)
+            )
+            out.append((tuple(combo), value))
+        out.sort(key=lambda item: -item[1])
+        return out[:8]
 
     def _enforce_facility_constraints(
         self, unit: PassengerUnit, combos: list[tuple[tuple[int, ...], float]]
@@ -379,9 +428,28 @@ class SolverTables:
         if legal:
             legal.sort(key=lambda item: -item[1])
             return legal
-        # 一条合规候选都没有（专区确实售罄，且单元里有多位轮椅旅客）：
-        # 退回原集，由"出票优先"接管（出票 + 站车协助提示）。
+
+        # 一条合规候选都没有。判据必须按**本单元的需求量**算，而不是
+        # "全车专区是否售罄" —— 这两者在多车厢编组下经常不一致：
+        # 专区在 1 车还剩几个空位，但本单元有 4 位轮椅旅客，依然坐不下，
+        # 此时若按"全车未售罄"处理就会整单候补（实测 85 个空座的车厢上
+        # 8 人订单全部候补）。正确判据是：
+        #
+        #   本单元需要的轮椅座位数 > 当前可用专区分量
+        #     -> 按"出票优先"发普通座位 + 生成站车协助提示
+        #   否则（专区够，只是人多坐不下）
+        #     -> 退回原集，把专区留给别的轮椅旅客
+        if self._zone_short_for(unit):
+            return pool
         return combos
+
+    def _zone_short_for(self, unit: PassengerUnit) -> bool:
+        """本单元需要的轮椅座位数是否超过当前可用的无障碍专区分量。"""
+        needed = sum(1 for p in unit.passengers if p.is_mobility_impaired)
+        if needed == 0:
+            return False
+        available = sum(1 for seat in self.seats if seat.in_accessible_zone())
+        return available < needed
 
     def _facility_violations(
         self, unit: PassengerUnit, combos: list[tuple[tuple[int, ...], float]]
@@ -549,6 +617,13 @@ class SolverTables:
                     break
         # 设施硬约束（轮椅 -> 无障碍专区）必须在这里就排除，
         # 否则即使代价函数给了巨额惩罚，贪心/直发路径仍可能选中违规座位。
+        #
+        # **例外**：无障碍专区一个空位都不剩时，按"出票优先"允许普通座位
+        # （由 notices 生成站车协助提示）。这一条不能少 —— 早期实现无条件
+        # 排除非专区座位，导致专区占满后到来的轮椅旅客在**还有 899 个空座**的
+        # 车厢上被整单候补，与出票优先直接冲突。
+        if self._zone_short_for(unit):
+            return out
         return [
             combo
             for combo in out
@@ -745,6 +820,13 @@ def assign_greedy(
     budget_exhausted = False
 
     for unit in _priority_units(ctx):
+        # 专区是否"够本单元用"，要在**每个单元开始前**重算，而不是整单开始时算一次。
+        # 原因是一个真实的误判：一张单里有 8 位轮椅旅客，下单前专区还剩 7 座
+        # （`accessible_available` 采样为 True），前 7 位把这 7 座用掉后，
+        # 第 8 位只能坐普通座位 —— 却被记成 **Tier 0 求解器失误**，
+        # 而它实际是"专区不够"的服务例外，应当记 T5 并生成站车协助提示。
+        if any(p.is_mobility_impaired for p in unit.passengers) and tables._zone_short_for(unit):
+            scorer.accessible_available = False
         result = _greedy_place_unit(unit, tables, free, placed, ctx, deadline=deadline)
         if time.perf_counter() > deadline:
             budget_exhausted = True

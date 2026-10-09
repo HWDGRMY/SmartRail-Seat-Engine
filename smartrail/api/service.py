@@ -455,16 +455,18 @@ def submit_orders(payload: Mapping[str, Any]) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     seat_owner: dict[str, int] = {}
     for index, order in enumerate(orders):
-        # 求解前先做结构性可行性判定（不预测具体方案，只判硬约束）
+        # 求解前先做情况判定（不预测具体方案，只看结构性事实）
         feasibility = analyse_order(
             order, engine.formation.seats, engine.state.occupied
         )
-        if not feasibility.feasible:
-            # **结构性不可行就不要去求解**。两个理由：
-            # 1. 结果一样（都是出不了票），但求解大单元会触发组合爆炸 ——
-            #    实测"4 位轮椅 + 4 位家属"的 8 人订单让求解卡住数分钟；
-            # 2. 提前给出的是**可操作的原因**（专区座位不够），
-            #    而不是求解器超时后的笼统"无可行座位"。
+        if feasibility.severity == "blocking":
+            # **只有"全车真的没空座"才跳过求解**。理由：
+            # 1. 结果一样（出不了票），但求解大单元会触发组合爆炸 ——
+            #    实测"8 人订单"曾让求解卡住数分钟；
+            # 2. 提前给出的是**事实**（全车余票不足），而不是笼统的"无可行座位"。
+            #
+            # 注意：特殊情况**不再**走这条分支。无障碍专区不足、同车厢装不下，
+            # 都属于"提示后照常出票"，必须真的去求解。
             summary = outcome_summary(order, _empty_solution(order.order_id), feasibility)
             summary["index"] = index
             summary["note"] = str(
@@ -552,12 +554,26 @@ def submit_orders(payload: Mapping[str, Any]) -> dict[str, Any]:
             "waitlisted_passengers": requested - seated,
             "seat_rate": round(seated / requested, 4) if requested else 1.0,
             "fulfilled_orders": counts.get("fulfilled", 0),
+            "confirmed_orders": counts.get("confirmed", 0),
             "partial_orders": counts.get("partial", 0),
             "action_orders": counts.get("action_required", 0),
             "impossible_orders": counts.get("impossible", 0),
             "tier0_violations": sum(item["tier0"] for item in results),
             "wall_ms": round(wall_ms, 2),
         },
+        # 需要用户拍板的问题（前端应弹确认框，而不是替用户拒票）
+        "confirmations": [
+            {
+                "order_id": item["order_id"],
+                "question": item["question"],
+                "code": (item.get("feasibility") or {}).get("code", ""),
+                "message": item["reasons"][0] if item["reasons"] else "",
+                "seated": item["seated"],
+                "requested": item["requested"],
+            }
+            for item in results
+            if item.get("question")
+        ],
         "unmet_orders": [
             {
                 "order_id": item["order_id"],
@@ -566,7 +582,7 @@ def submit_orders(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "reasons": item["reasons"],
             }
             for item in results
-            if item["level"] != "fulfilled"
+            if item["level"] not in ("fulfilled",)
         ],
         "feasibility_codes": feasibility_catalog(),
         "train": snapshot,

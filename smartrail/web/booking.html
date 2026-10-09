@@ -192,6 +192,11 @@
     border:1px solid var(--line);background:#fff}
   .trow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .unmethead{font-size:13px;font-weight:600;color:#b3352f;margin-bottom:7px}
+  .askhead{font-size:13px;font-weight:600;color:#c2703a;margin-bottom:7px}
+  .askcard{border-left:4px solid #c2703a;background:#fdf6f1;border-radius:0 7px 7px 0;
+    padding:9px 12px;margin-bottom:7px}
+  .askq{font-size:13px;color:#8a4a1c;line-height:1.6}
+  .askmeta{font-size:11.5px;color:#9c8570;margin-top:4px}
   .unmetcard{border-left:4px solid var(--bad);border-radius:0 7px 7px 0;padding:8px 11px;
     margin-bottom:7px}
   .umhead{display:flex;align-items:center;gap:7px;font-size:13px}
@@ -801,6 +806,7 @@ const ROLE_LABEL = {
 };
 const LEVEL_STYLE = {
   fulfilled: { color: "var(--ok)", bg: "#f0fbf4", cls: "satisfied" },
+  confirmed: { color: "#1f8b91", bg: "#f0fbfc", cls: "satisfied" },
   partial: { color: "var(--warn)", bg: "#fdf8f0", cls: "compromised" },
   action_required: { color: "#c2703a", bg: "#fdf6f1", cls: "compromised" },
   impossible: { color: "var(--bad)", bg: "#fdf2f1", cls: "impossible" },
@@ -984,9 +990,10 @@ async function submitOrders() {
     renderSubmitOrders();
     renderConcurrentSeatMap();
     const s = result.summary;
+    const asks = (result.confirmations || []).length;
     $("cstatus").textContent =
       `完成：${s.orders} 单 / ${s.requested_passengers} 人，出票 ${s.seated_passengers}，`
-      + `无法满足 ${s.impossible_orders} 单，用时 ${s.wall_ms} ms`;
+      + `候补 ${s.waitlisted_passengers}，需确认 ${asks}，用时 ${s.wall_ms} ms`;
     toast("提交完成");
   } catch (error) {
     $("cstatus").textContent = "失败：" + error.message;
@@ -998,18 +1005,23 @@ async function submitOrders() {
 
 function renderSubmitSummary() {
   const s = submitResult.summary;
+  const asks = (submitResult.confirmations || []).length;
   $("csummary").innerHTML = `
     <div class="metrics">
       <div class="metric"><div class="k">订单 / 乘客</div><div class="v">${s.orders} / ${s.requested_passengers}</div></div>
       <div class="metric"><div class="k">出票 / 候补</div><div class="v">${s.seated_passengers} / ${s.waitlisted_passengers}</div></div>
-      <div class="metric"><div class="k">完全满足</div>
+      <div class="metric"><div class="k">全部出票</div>
         <div class="v" style="color:var(--ok)">${s.fulfilled_orders}</div></div>
-      <div class="metric"><div class="k">部分满足</div>
-        <div class="v" style="color:${s.partial_orders ? "var(--warn)" : "#333"}">${s.partial_orders}</div></div>
+      <div class="metric"><div class="k">已确认例外后出票</div>
+        <div class="v" style="color:#1f8b91">${s.confirmed_orders || 0}</div></div>
       <div class="metric"><div class="k">需现场处理</div>
         <div class="v" style="color:${s.action_orders ? "#c2703a" : "#333"}">${s.action_orders}</div></div>
-      <div class="metric"><div class="k">无法满足</div>
+      <div class="metric"><div class="k">部分出票（候补）</div>
+        <div class="v" style="color:${s.partial_orders ? "var(--warn)" : "#333"}">${s.partial_orders}</div></div>
+      <div class="metric"><div class="k">无座可发</div>
         <div class="v" style="color:${s.impossible_orders ? "var(--bad)" : "var(--ok)"}">${s.impossible_orders}</div></div>
+      <div class="metric"><div class="k">需确认</div>
+        <div class="v" style="color:${asks ? "#c2703a" : "var(--ok)"}">${asks}</div></div>
       <div class="metric"><div class="k">Tier 0 违规</div>
         <div class="v" style="color:${s.tier0_violations ? "var(--bad)" : "var(--ok)"}">${s.tier0_violations}</div></div>
       <div class="metric"><div class="k">总耗时</div><div class="v">${s.wall_ms} ms</div></div>
@@ -1017,24 +1029,43 @@ function renderSubmitSummary() {
 }
 
 function renderUnmet() {
+  const asks = submitResult.confirmations || [];
   const unmet = submitResult.unmet_orders || [];
-  if (!unmet.length) {
-    $("unmetBox").innerHTML =
-      '<div class="unmetok">全部订单都被满足，无需现场处理。</div>';
-    return;
+  const parts = [];
+
+  // 先展示"需要用户拍板"的问题 —— 出票优先不等于不告知，
+  // 需要用户接受的例外必须显式问出来。
+  if (asks.length) {
+    parts.push(`
+      <div class="askhead">需要你确认的例外（${asks.length} 张）—— 票已出，确认后生效</div>
+      ${asks.map((item) => `
+        <div class="askcard">
+          <div class="askq">？ ${item.question}</div>
+          <div class="askmeta">
+            订单 ${item.order_id} · 已出票 ${item.seated}/${item.requested} 人
+            ${item.code ? ` · 原因码 ${item.code}` : ""}
+          </div>
+        </div>`).join("")}`);
   }
-  $("unmetBox").innerHTML = `
-    <div class="unmethead">未满足订单（${unmet.length} 张）—— 需要用户处理或现场协助</div>
-    ${unmet.map((item) => {
-      const style = LEVEL_STYLE[item.level] || LEVEL_STYLE.partial;
-      return `<div class="unmetcard" style="border-left-color:${style.color};background:${style.bg}">
-        <div class="umhead">
-          <b>${item.order_id}</b>
-          <span class="pill ${style.cls}">${item.level_label}</span>
-        </div>
-        ${item.reasons.map((r) => `<div class="umreason">· ${r}</div>`).join("")}
-      </div>`;
-    }).join("")}`;
+
+  if (unmet.length) {
+    parts.push(`
+      <div class="unmethead">需要现场处理的订单（${unmet.length} 张）</div>
+      ${unmet.map((item) => {
+        const style = LEVEL_STYLE[item.level] || LEVEL_STYLE.partial;
+        return `<div class="unmetcard" style="border-left-color:${style.color};background:${style.bg}">
+          <div class="umhead">
+            <b>${item.order_id}</b>
+            <span class="pill ${style.cls}">${item.level_label}</span>
+          </div>
+          ${item.reasons.map((r) => `<div class="umreason">· ${r}</div>`).join("")}
+        </div>`;
+      }).join("")}`);
+  }
+
+  $("unmetBox").innerHTML = parts.length
+    ? parts.join("")
+    : '<div class="unmetok">全部订单均已出票，且无需现场处理或额外确认。</div>';
 }
 
 function renderSubmitOrders() {

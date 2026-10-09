@@ -77,8 +77,10 @@ try:
     status, types = get("/api/orders/types")
     check(status == 200 and len(types["archetypes"]) >= 15,
           f"返回 {len(types.get('archetypes', []))} 种乘客类型")
-    check("outcome_levels" in types and len(types["outcome_levels"]) == 4,
-          "返回四档结果定义")
+    check(
+        "outcome_levels" in types and len(types["outcome_levels"]) >= 4,
+        f"返回结果分档定义（{len(types.get('outcome_levels', {}))} 档）",
+    )
     check("feasibility_codes" in types, "返回不可行原因码")
 
     print()
@@ -102,8 +104,8 @@ try:
           "每单带分档与原因")
 
     print()
-    print("=== 4) 无法满足的订单必须有提示 ===")
-    # 单次请求内自足：先用 7 张轮椅订单占满专区（10 座），再放两张必然溢出的单。
+    print("=== 4) 出票优先：特殊席位不够也照常出票 + 提示/询问 ===")
+    # 单次请求内自足：先用 7 张轮椅订单占满专区（10 座），再放溢出的单。
     # 不能依赖"上一节刚好占掉了座位"——那是测试之间的隐式耦合。
     orders = [
         {
@@ -115,31 +117,40 @@ try:
     ]
     orders.append(
         {
-            "order_id": "BAD-ONE",
+            "order_id": "LATE-ONE",
             "note": "专区满后到来的轮椅旅客",
             "passengers": [{"key": "wheelchair"}, {"key": "caregiver"}],
         }
     )
     orders.append(
         {
-            "order_id": "BAD-MANY",
+            "order_id": "LATE-MANY",
             "note": "一张单 4 位轮椅",
             "passengers": [{"key": "wheelchair"}] * 4 + [{"key": "caregiver"}] * 4,
         }
     )
-    status, bad = post("/api/orders/submit", {"orders": orders})
-    summary = bad["summary"]
+    status, overflow = post("/api/orders/submit", {"orders": orders})
+    summary = overflow["summary"]
     check(status == 200, "接口可用")
-    check(summary["impossible_orders"] >= 1,
-          f"识别出无法满足的订单（{summary['impossible_orders']} 张）")
-    check(bool(bad["unmet_orders"]), "未满足订单清单非空")
-    reasons = " ".join(bad["unmet_orders"][0]["reasons"])
-    check("无障碍专区" in reasons, f"原因说明具体（{reasons[:60]}）")
-    check(bad["unmet_orders"][0]["level"] == "impossible", "分档为『无法满足』")
-    # 溢出订单必须落在最后两张里
-    bad_ids = {item["order_id"] for item in bad["unmet_orders"]}
-    check(bool(bad_ids & {"BAD-ONE", "BAD-MANY"}),
-          f"溢出的订单被标为无法满足（{[i['order_id'] for i in bad['unmet_orders']]}）")
+    check(
+        summary["seated_passengers"] == summary["requested_passengers"],
+        f"专区售罄后仍然全员出票"
+        f"（{summary['seated_passengers']}/{summary['requested_passengers']}）",
+    )
+    check(summary["waitlisted_passengers"] == 0, "没有因专区售罄而候补")
+    check(summary["impossible_orders"] == 0, "没有订单被判『无座可发』")
+    late = [item for item in overflow["orders"] if item["order_id"] == "LATE-ONE"][0]
+    check(late["seated"] == late["requested"], "溢出的轮椅订单也出票了")
+    notices = " ".join(n["message"] for n in late["notices"])
+    check("无障碍专区已满" in notices, f"生成站车协助提示（{notices[:48]}…）")
+    check(
+        any(item["order_id"] == "LATE-ONE" for item in overflow["confirmations"]),
+        "给出需要用户确认的问题（提示/询问后出票）",
+    )
+    check(
+        any(item["order_id"] == "LATE-MANY" for item in overflow["confirmations"]),
+        "超配额的轮椅大单也给出确认询问",
+    )
 
     print()
     print("=== 5) 座位图可按订单着色 ===")
