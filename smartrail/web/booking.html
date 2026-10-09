@@ -943,9 +943,14 @@ const MODE_LABEL = {
 let SEVERE_LEVEL_IDS = ["severe", "critical"];
 let TERM_STAGE_IDS = ["term"];
 
-let presetCatalog = [];
+// 注意：presetCatalog / concurrentCar 已在上面声明（同一个脚本作用域）。
+// 早期这里又写了一遍 `let presetCatalog = []` 与 `let concurrentCar = 1`，
+// 造成 SyntaxError: Identifier 'presetCatalog' has already been declared ——
+// **整个脚本一行都不会执行**，表现为"页面上哪个按钮都点不动"。
+// 顶层重复声明是致命错误，且浏览器只在控制台报，页面上完全看不出来。
+// （这段说明刻意不写出"尖括号 + script"的字面形式，否则会被标签配对检查
+//   当成真的开标签，报出"开 2 个 / 闭 1 个"的假阳性。）
 let submitResult = null;
-let concurrentCar = 1;
 let orders = [];          // [{note, mode, passengers: [key, ...]}]
 let activeOrder = 0;      // 当前正在编辑的订单下标
 

@@ -21,10 +21,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from smartrail.web.bracket_check import check_html_tags, check_js_brackets  # noqa: E402
+from smartrail.web.js_lint import check_file as lint_js_file  # noqa: E402
 
 UNDER_PYTEST = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
 _FAILURES: list[str] = []
 PAGE = ROOT / "smartrail" / "web" / "booking.html"
+WEB_DIR = ROOT / "smartrail" / "web"
 
 
 def check(condition: bool, message: str) -> None:
@@ -97,9 +99,46 @@ def test_data_isolation_constructs() -> None:
     check("trimDimensions" in html, "基础人数减少时同步裁剪维度计数（防不自洽）")
 
 
+def test_no_top_level_redeclaration() -> None:
+    """页面脚本不得有顶层重复声明。
+
+    这条来自一次**真实事故**：``booking.html`` 里 ``presetCatalog`` 与
+    ``concurrentCar`` 各被 ``let`` 声明了两次，构成 SyntaxError，
+    浏览器拒绝执行**整个 <script>** —— 用户看到的是"哪个按钮都点不动"。
+
+    当时的静态检查（字符串在不在、括号配不配）**全部通过**：括号是配对的、
+    字符串也都在，唯独脚本一行都没运行。只有真正执行 JS 才能发现。
+    """
+    print("[编辑器] 顶层重复声明（会导致整个脚本不执行）")
+    problems: list[str] = []
+    for page in sorted(WEB_DIR.glob("*.html")):
+        problems.extend(lint_js_file(page))
+    check(not problems, f"四个页面均无顶层重复声明（问题：{problems[:2] or '无'}）")
+
+
+def test_every_referenced_id_exists() -> None:
+    """JS 里 ``$("id")`` 引用的元素必须真的存在于 HTML 中。
+
+    缺 id 会让 ``$("x").onclick = ...`` 抛 TypeError，后续的按钮绑定
+    全部中断 —— 表现同样是"按钮点不动"，但只影响它之后的那一段。
+    """
+    print("[编辑器] JS 引用的 id 都存在")
+    import re
+
+    html = PAGE.read_text(encoding="utf-8")
+    ids = set(re.findall(r'id="([^"]+)"', html))
+    script = html[html.index("<script>") + len("<script>"):html.rindex("</script>")]
+    referenced = set(re.findall(r'\$\("([^"]+)"\)', script))
+    referenced |= set(re.findall(r'getElementById\("([^"]+)"\)', script))
+    missing = sorted(referenced - ids)
+    check(not missing, f"引用的 id 全部存在（缺失：{missing[:5] or '无'}）")
+
+
 def main() -> int:
     tests = [
         test_brackets_and_tags,
+        test_no_top_level_redeclaration,
+        test_every_referenced_id_exists,
         test_all_modules_present,
         test_rules_reflected_in_page,
         test_data_isolation_constructs,

@@ -19,6 +19,33 @@ FATAL:mojo\public\cpp\platform\platform_channel.cc: Check failed: . : 拒绝访�
 
 依赖：`Pillow`（系统 Python 3.13 自带；项目 `.venv` 未装）。
 
+## 为什么必须真跑一遍 JS
+
+浏览器起不来，不代表没法验证页面脚本 —— **Node.js 可以跑**。
+
+这不是锦上添花，而是因为踩过一次真实的坑：`booking.html` 里
+`presetCatalog` 被 `let` 声明了两次，构成 `SyntaxError`，
+浏览器拒绝执行**整个脚本**，页面上**哪个按钮都点不动**。
+
+当时所有静态检查**全部通过**：
+
+| 检查 | 结果 | 为什么抓不到 |
+| :--- | :--- | :--- |
+| 括号配对 | 通过 | 括号确实配对，只是脚本不执行 |
+| 标签配对 | 通过 | 标签确实配对 |
+| 关键字符串存在 | 通过 | 字符串都在，包括那两行重复声明 |
+| 接口 `/api/composition/*` | 通过 | 后端没问题，坏的是前端脚本 |
+
+**教训**："代码写对了"和"代码会执行"是两件事。
+语法错误会让整段脚本静默失效，而静态检查对它完全免疫。
+
+所以现在有三层：
+
+1. `smartrail/web/js_lint.py` —— 纯 Python，查**顶层重复声明**（快，可进 CI）；
+2. `tools/check_page_js.py` —— Node 真跑 `boot()`、检查按钮绑定、**逐个点一遍**；
+3. `tools/verify_served_pages.py` —— 检查**服务实际下发**的页面，
+   防"本地修好了，进程还在发旧版"。
+
 ## 脚本清单
 
 | 脚本 | 作用 | 输出 |
@@ -30,6 +57,8 @@ FATAL:mojo\public\cpp\platform\platform_channel.cc: Check failed: . : 拒绝访�
 | `draw_ticket_first.py` | 画出票优先策略的 6 个场景对比 | `docs/screenshots/ticket-first.png` |
 | `verify_order_page.py` | 批量提交页的页面级验收（自带服务） | 控制台结论 |
 | `verify_composer.py` | OrderEditor 的页面级验收（自带服务） | 控制台结论 |
+| `check_page_js.py` | **在 Node 里真跑页面 JS**：启动、按钮绑定、逐个点击 | 控制台结论 |
+| `verify_served_pages.py` | 检查**服务实际下发**的四个页面（防"本地好了、线上还是旧版"） | 控制台结论 |
 | `verify_readme.py` | **校验 README 里的可核查声明**（路径、断言数、文件数） | 控制台结论 |
 | `verify_goal.py` | 目标总验收（读 GitHub API 独立核验） | 控制台结论 |
 | `count_files.py` | 统计各目录的文件数/行数（写文档时取数用） | 控制台结论 |
@@ -60,6 +89,15 @@ python tools/draw_ticket_first.py
 python tools/verify_order_page.py     # 批量提交页
 python tools/verify_composer.py       # OrderEditor（人员构成组单）
 ```
+
+**页面脚本执行检查**（需要 Node.js，且后端要在跑）：
+
+```bash
+python tools/check_page_js.py         # 在 Node 里真跑 booking 的 JS 并逐个点按钮
+python tools/verify_served_pages.py   # 检查服务实际下发的四个页面
+```
+
+这两个脚本的由来见下面"为什么必须真跑一遍 JS"。
 
 文档与仓库自检脚本**完全离线**（不连网、不起服务）：
 

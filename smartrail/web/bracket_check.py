@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 PAIRS = {")": "(", "]": "[", "}": "{"}
@@ -76,11 +77,17 @@ def check_js_brackets(text: str) -> list[str]:
 
 
 def check_html_tags(text: str) -> list[str]:
-    """检查成对标签是否配对（只查结构标签，不查自闭合标签）。"""
+    """检查成对标签是否配对（只查结构标签，不查自闭合标签）。
+
+    注意 ``</script>`` 自身包含子串 ``<script``，所以开标签必须用
+    ``<script`` **且前一个字符不是 ``/``** 来计数 —— 早期直接用
+    ``text.count("<script")`` 会把闭标签也数进去，报出
+    "``<script>`` 开 2 个 / 闭 1 个"的假阳性。
+    """
     problems: list[str] = []
     for tag in ("section", "script", "style", "main", "body", "html", "table"):
-        opened = text.count(f"<{tag}")
-        closed = text.count(f"</{tag}>")
+        opened = len(re.findall(rf"<{tag}[\s>]", text))
+        closed = len(re.findall(rf"</{tag}\s*>", text))
         if opened != closed:
             problems.append(f"<{tag}> 开 {opened} 个 / 闭 {closed} 个")
     return problems
