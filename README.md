@@ -259,6 +259,9 @@ SmartRail-Seat-Engine/
 │   ├── draw_order_submission.py   # 画批量提交订单结果图
 │   ├── draw_ticket_first.py       # 画出票优先策略场景图
 │   ├── verify_order_page.py       # 页面级验收（自带服务）
+│   ├── verify_readme.py           # 校验 README 的数字与路径声明
+│   ├── count_files.py             # 统计各目录文件数与行数
+│   ├── repo_overview.py           # 提交内容构成 + LICENSE 一致性
 │   └── README.md                  # 用法与"为什么不用无头浏览器"
 ├── benchmarks/                    # 基准数据与报告
 │   ├── offpeak.json / peak.json   # 原始基准输出（README 数字来源）

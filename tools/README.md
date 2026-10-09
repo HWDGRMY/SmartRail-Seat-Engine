@@ -24,9 +24,12 @@ FATAL:mojo\public\cpp\platform\platform_channel.cc: Check failed: . : 拒绝访�
 | 脚本 | 作用 | 输出 |
 | :--- | :--- | :--- |
 | `draw_simulation.py` | 画"按类型批量生成订单"的结果（座位图按订单着色） | `docs/screenshots/concurrent-simulation.png` |
-| `draw_order_submission.py` | 画"批量提交订单"的结果（含未满足订单与原因） | `docs/screenshots/order-submission.png` |
+| `draw_order_submission.py` | 画"批量提交订单"的结果（含需确认例外与现场处理） | `docs/screenshots/order-submission.png` |
 | `draw_ticket_first.py` | 画出票优先策略的 6 个场景对比 | `docs/screenshots/ticket-first.png` |
 | `verify_order_page.py` | 页面级验收（自带服务，跑真实 HTTP + 真实 HTML） | 控制台结论 |
+| `verify_readme.py` | **校验 README 里的可核查声明**（路径、断言数、文件数） | 控制台结论 |
+| `count_files.py` | 统计各目录的文件数/行数（写文档时取数用） | 控制台结论 |
+| `repo_overview.py` | 总览提交内容，确认"该提交的提交、该忽略的忽略" | 控制台结论 |
 
 ## 用法
 
@@ -50,6 +53,18 @@ python tools/draw_ticket_first.py
 ```bash
 python tools/verify_order_page.py
 ```
+
+文档与仓库自检脚本**完全离线**（不连网、不起服务）：
+
+```bash
+python tools/verify_readme.py     # README 里的数字与路径是否还对得上
+python tools/repo_overview.py     # 提交内容构成 + LICENSE 字节一致性
+python tools/count_files.py       # 各目录文件数/行数（改文档时取数）
+```
+
+> `verify_readme.py` 的存在理由：README 里的"74 条断言""45 个文件"这类数字
+> **会随代码改动过期**，而人不会每次改代码都回去改文档。与其靠自觉，
+> 不如让机器每次都能验一遍 —— 这也是本项目"配置卫生不变量"思路的延伸。
 
 ## 通用参数
 
