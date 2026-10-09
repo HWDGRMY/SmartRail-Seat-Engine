@@ -81,8 +81,19 @@ local_head = subprocess.run(["git", "rev-parse", "main"], cwd=ROOT, capture_outp
 remote_head = api(f"https://api.github.com/repos/{REPO}/commits/main")["sha"]
 note(local_head == remote_head,
      f"远程 HEAD 与本地一致（{remote_head[:7]}）")
-commits = api(f"https://api.github.com/repos/{REPO}/commits?per_page=10")
-note(len(commits) == 3, f"远程提交数 {len(commits)}")
+commits = api(f"https://api.github.com/repos/{REPO}/commits?per_page=20")
+local_commits = subprocess.run(
+    ["git", "rev-list", "--count", "main"], cwd=ROOT, capture_output=True,
+    text=True).stdout.strip()
+# 断言"远程提交数与本地一致"，而不是写死一个数字 ——
+# 写死数字会在每次新增提交后变成假失败（本脚本第一版写死 3，已踩过）。
+note(str(len(commits)) == local_commits,
+     f"远程提交数 {len(commits)} == 本地 {local_commits}")
+remote_shas = {c["sha"] for c in commits}
+local_shas = set(subprocess.run(
+    ["git", "rev-list", "main"], cwd=ROOT, capture_output=True,
+    text=True).stdout.split())
+note(remote_shas == local_shas, "远程提交集合与本地完全一致")
 tree = api(f"https://api.github.com/repos/{REPO}/git/trees/main?recursive=1")
 remote_blobs = {t["path"] for t in tree["tree"] if t["type"] == "blob"}
 note(len(remote_blobs) == len(tracked),
