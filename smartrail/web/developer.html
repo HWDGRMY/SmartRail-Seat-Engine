@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>开发者模式 · SmartRail</title>
+<style>
+  :root{
+    --blue:#3b8eea; --blue-d:#2f7ad0; --bg:#f2f4f7; --card:#fff;
+    --ink:#333; --muted:#7b8794; --line:#e9edf2; --ok:#2eab5b;
+    --warn:#e6a23c; --bad:#e5504a; --quiet:#6d5bd0; --access:#16a3a3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.65 "Microsoft YaHei","PingFang SC",system-ui,sans-serif}
+  .topbar{background:linear-gradient(90deg,#2b3a4d,#3d5169);color:#fff;
+    padding:12px 26px;display:flex;align-items:center;gap:18px}
+  .topbar h1{margin:0;font-size:17px;font-weight:600}
+  .topbar .nav{display:flex;gap:12px;font-size:13.5px;margin-left:auto;align-items:center}
+  .topbar .nav a{color:#dbe4ee;padding:4px 10px;border-radius:5px;text-decoration:none}
+  .topbar .nav a.active,.topbar .nav a:hover{background:rgba(255,255,255,.16);color:#fff}
+  .wrap{max-width:1560px;margin:0 auto;padding:16px 20px 60px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    margin-bottom:14px;overflow:hidden}
+  .card > h2{margin:0;padding:12px 16px;font-size:14.5px;font-weight:600;
+    border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .card > h2 .hint{font-weight:400;font-size:12px;color:var(--muted)}
+  .card .body{padding:14px 16px}
+  .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .btn{border:0;border-radius:6px;background:var(--blue);color:#fff;padding:7px 15px;
+    font-size:13px;cursor:pointer;font-family:inherit}
+  .btn:hover{background:var(--blue-d)}
+  .btn.ghost{background:#fff;border:1px solid var(--line);color:#556}
+  .btn.ghost:hover{border-color:var(--blue);color:var(--blue-d)}
+  .btn.danger{background:var(--bad)}
+  .btn.danger:hover{background:#cf443e}
+  .btn.small{padding:4px 10px;font-size:12px}
+  .hint{color:var(--muted);font-size:12.5px}
+  .grid2{display:grid;grid-template-columns:1fr 380px;gap:14px;align-items:start}
+  @media (max-width:1200px){.grid2{grid-template-columns:1fr}}
+  .metrics{display:flex;flex-wrap:wrap;gap:22px}
+  .metric .k{font-size:11.5px;color:var(--muted)}
+  .metric .v{font-size:21px;font-weight:700;font-variant-numeric:tabular-nums}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left}
+  th{color:var(--muted);font-weight:500;font-size:11.5px;background:#fbfcfd}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  /* ---- 余票滑块 ---- */
+  .slider{display:flex;align-items:center;gap:10px;margin-bottom:9px}
+  .slider .nm{width:64px;font-size:13px;font-weight:600}
+  .slider input[type=range]{flex:1}
+  .slider .val{width:56px;text-align:right;font-variant-numeric:tabular-nums;
+    font-weight:600;font-size:13.5px}
+  .slider .total{width:64px;color:var(--muted);font-size:11.5px}
+  /* ---- 座位图 ---- */
+  .car{border:1px solid var(--line);border-radius:8px;margin-bottom:11px;overflow:hidden}
+  .car-head{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#fbfcfd;
+    border-bottom:1px solid var(--line);font-size:13px;flex-wrap:wrap}
+  .car-head b{font-size:14px}
+  .car-body{padding:10px 12px;overflow:auto}
+  .seatgrid{display:inline-block;min-width:100%}
+  .srow{display:flex;align-items:center;gap:2px;margin-bottom:2px}
+  .rno{width:26px;font-size:10.5px;color:var(--muted);text-align:right;
+    flex:0 0 auto;font-variant-numeric:tabular-nums}
+  .seat{width:25px;height:21px;border-radius:3px;border:1px solid #cfd6de;background:#fff;
+    flex:0 0 auto;font-size:9px;display:flex;align-items:center;justify-content:center;
+    color:#98a2ae;position:relative;cursor:default}
+  .seat.sold{background:#9fb2c6;border-color:#8ea3ba;color:#fff}
+  .seat.manual{background:#d9c7a8;border-color:#c8b394;color:#6b5a3d}
+  .seat.preset{background:#c9d4e0;border-color:#b7c4d3;color:#5a6a7c}
+  .seat.quiet{outline:2px solid var(--quiet);outline-offset:-2px}
+  .seat.access{box-shadow:inset 0 -3px 0 var(--access)}
+  .seat.aisle-gap{background:transparent;border:0;width:14px}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;align-items:center}
+  .legend i{display:inline-block;width:13px;height:13px;border-radius:3px;
+    border:1px solid #cfd6de;vertical-align:-2px;margin-right:4px}
+  .toast{position:fixed;left:50%;bottom:40px;transform:translateX(-50%);
+    background:rgba(35,45,58,.92);color:#fff;padding:9px 20px;border-radius:7px;
+    font-size:13px;opacity:0;pointer-events:none;transition:.25s;z-index:99}
+  .toast.on{opacity:1}
+  .paxline{font-size:12.5px;display:flex;gap:8px;padding:3px 0;
+    border-bottom:1px dashed var(--line)}
+  .paxline .nm{flex:1}
+  .tag{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11px;
+    background:#eef4fd;color:var(--blue-d);border:1px solid #d8e7fa}
+  .tag.q{background:#f3f0fd;color:var(--quiet);border-color:#e2ddfa}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>开发者模式 · 后台管理与测试</h1>
+  <div class="nav">
+    <a href="/ticket">用户模式</a>
+    <a href="/dev" class="active">开发者模式</a>
+    <a href="/">座位图工具</a>
+    <a href="/acceptance">验收台</a>
+    <span id="conn" style="color:#c9d6e4;font-size:12px"></span>
+  </div>
+</div>
+
+<div class="wrap">
+  <!-- 概览 -->
+  <div class="card">
+    <h2>概览 <span class="hint" id="trainCode"></span>
+      <span style="margin-left:auto"></span>
+      <button class="btn danger small" id="btnReset">重置系统</button>
+    </h2>
+    <div class="body">
+      <div class="metrics" id="metrics"></div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div>
+      <!-- 全局座位图 -->
+      <div class="card">
+        <h2>全局座位图 <span class="hint">16 节编组 · 点击座位可手动锁定/解锁</span></h2>
+        <div class="body">
+          <div class="legend" style="margin-bottom:10px">
+            <span><i style="background:#fff"></i>可选</span>
+            <span><i style="background:#9fb2c6"></i>用户已售</span>
+            <span><i style="background:#d9c7a8"></i>手动锁定</span>
+            <span><i style="background:#c9d4e0"></i>预设占用</span>
+            <span><i style="border:2px solid var(--quiet)"></i>静音车厢</span>
+            <span><i style="box-shadow:inset 0 -3px 0 var(--access)"></i>无障碍</span>
+          </div>
+          <div id="carriages"><div class="hint">加载中…</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <!-- 模拟余票 -->
+      <div class="card">
+        <h2>模拟余票 <span class="hint">调整后实时影响用户模式</span></h2>
+        <div class="body" id="sliders"></div>
+      </div>
+      <!-- 上座率 -->
+      <div class="card">
+        <h2>快速压测</h2>
+        <div class="body">
+          <div class="row">
+            <button class="btn ghost small" data-fill="0">空车</button>
+            <button class="btn ghost small" data-fill="0.3">三成</button>
+            <button class="btn ghost small" data-fill="0.6">六成</button>
+            <button class="btn ghost small" data-fill="0.85">八成五</button>
+            <button class="btn ghost small" data-fill="1">满座</button>
+          </div>
+          <div class="hint" style="margin-top:8px">
+            「满座」只占满座位，不影响手动锁定。重置系统才能完全清空。
+          </div>
+        </div>
+      </div>
+      <!-- 订单 -->
+      <div class="card">
+        <h2>用户下单记录 <span class="hint" id="orderCount"></span></h2>
+        <div class="body" id="orders"><div class="hint">还没有订单。</div></div>
+      </div>
+      <!-- 预制乘车人 -->
+      <div class="card">
+        <h2>预制乘车人 <span class="hint" id="paxCount"></span></h2>
+        <div class="body" id="passengers"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const text = await response.text();
+  let payload = null;
+  try { payload = text ? JSON.parse(text) : null; } catch (e) { payload = null; }
+  if (!response.ok) {
+    throw new Error((payload && payload.detail) || `HTTP ${response.status}`);
+  }
+  return payload;
+}
+function post(path, body) {
+  return api(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+}
+let toastTimer = null;
+function toast(message) {
+  const box = $("toast");
+  box.textContent = message;
+  box.classList.add("on");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => box.classList.remove("on"), 2400);
+}
+const esc = (s) => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;");
+
+let snapshot = null;
+let pendingTimers = {};
+
+function seatClass(seat) {
+  if (!seat.occupied) return "";
+  if (seat.source === "sold") return "sold";
+  if (seat.source === "manual") return "manual";
+  return "preset";
+}
+
+function renderMetrics() {
+  const total = snapshot.total_seats;
+  const occupied = snapshot.occupied_count;
+  const sold = snapshot.seats.filter((s) => s.source === "sold").length;
+  const manual = snapshot.seats.filter((s) => s.source === "manual").length;
+  const preset = snapshot.seats.filter((s) => s.source === "preset").length;
+  $("metrics").innerHTML = `
+    <span class="metric"><div class="k">全列定员</div><div class="v">${total}</div></span>
+    <span class="metric"><div class="k">已占用</div><div class="v">${occupied}</div></span>
+    <span class="metric"><div class="k">用户已售</div>
+      <div class="v" style="color:var(--blue-d)">${sold}</div></span>
+    <span class="metric"><div class="k">手动锁定</div>
+      <div class="v" style="color:#8a7550">${manual}</div></span>
+    <span class="metric"><div class="k">预设占用</div>
+      <div class="v" style="color:#5a6a7c">${preset}</div></span>
+    <span class="metric"><div class="k">剩余</div>
+      <div class="v" style="color:var(--ok)">${total - occupied}</div></span>
+    <span class="metric"><div class="k">上座率</div>
+      <div class="v">${(occupied / total * 100).toFixed(1)}%</div></span>`;
+}
+
+function renderCarriages() {
+  const byCar = {};
+  snapshot.seats.forEach((seat) => {
+    (byCar[seat.carriage] = byCar[seat.carriage] || []).push(seat);
+  });
+  $("carriages").innerHTML = snapshot.carriages.map((car) => {
+    const seats = byCar[car.number] || [];
+    const rows = {};
+    seats.forEach((s) => { (rows[s.row] = rows[s.row] || []).push(s); });
+    const rowNos = Object.keys(rows).map(Number).sort((a, b) => a - b);
+    const columns = car.columns;
+    const grid = rowNos.map((row) => {
+      const inRow = {};
+      rows[row].forEach((s) => { inRow[s.col] = s; });
+      const cells = columns.map((col) => {
+        const seat = inRow[col];
+        if (!seat) return '<span class="seat aisle-gap"></span>';
+        const cls = ["seat", seatClass(seat)];
+        if (seat.quiet) cls.push("quiet");
+        if (seat.accessible) cls.push("access");
+        const title = [
+          seat.seat_id, seat.class_code,
+          seat.occupied ? `已占用（${seat.source}${seat.order_id ? " " + seat.order_id : ""}${
+            seat.passenger_name ? " " + seat.passenger_name : ""}）` : "可选",
+          seat.quiet ? "静音车厢" : "", seat.accessible ? "无障碍" : "",
+        ].filter(Boolean).join(" · ");
+        return `<span class="${cls.join(" ")}" data-seat="${esc(seat.seat_id)}"
+          title="${esc(title)}">${esc(seat.col)}</span>`;
+      }).join("");
+      return `<div class="srow"><span class="rno">${row}</span>${cells}</div>`;
+    }).join("");
+    const printed = [];
+    if (car.quiet) printed.push('<span class="tag q">静音车厢</span>');
+    if (car.accessible) printed.push('<span class="tag">带残疾人卫生间</span>');
+    return `<div class="car">
+      <div class="car-head">
+        <b>${String(car.number).padStart(2, "0")}车</b>
+        <span class="hint">${esc(car.class_code)} · ${car.rows} 排 · ${columns.join("")}</span>
+        ${printed.join("")}
+        <span class="hint" style="margin-left:auto">
+          定员 ${car.total} ／ 余 ${car.remaining}</span>
+      </div>
+      <div class="car-body"><div class="seatgrid">${grid}</div></div>
+    </div>`;
+  }).join("");
+  $("carriages").querySelectorAll(".seat[data-seat]").forEach((node) => {
+    node.onclick = () => toggleSeat(node.dataset.seat);
+  });
+}
+
+function renderSliders() {
+  const classes = Object.keys(snapshot.remaining);
+  const totals = {};
+  snapshot.seats.forEach((s) => {
+    totals[s.class_code] = (totals[s.class_code] || 0) + 1;
+  });
+  $("sliders").innerHTML = classes.map((name) => {
+    const left = snapshot.remaining[name];
+    const total = totals[name];
+    return `<div class="slider">
+      <span class="nm">${esc(name)}</span>
+      <input type="range" min="0" max="${total}" value="${left}"
+        data-class="${esc(name)}">
+      <span class="val" id="val-${esc(name)}">${left}</span>
+      <span class="total">/ ${total}</span>
+    </div>`;
+  }).join("") + `<div class="hint" style="margin-top:6px">
+    拖动滑块设定该席别余票；实现方式是占用/释放最靠前的座位，
+    所以座位图上会看到"前面一段被标为手动锁定"。</div>`;
+  $("sliders").querySelectorAll("input[type=range]").forEach((node) => {
+    node.oninput = () => {
+      const name = node.dataset.class;
+      $("val-" + name).textContent = node.value;
+      clearTimeout(pendingTimers[name]);
+      pendingTimers[name] = setTimeout(() => applyRemaining(name, node.value), 220);
+    };
+  });
+}
+
+async function applyRemaining(classCode, value) {
+  try {
+    await post("/api/dev/remaining", { class_code: classCode, remaining: Number(value) });
+    await refresh();
+    toast(`${classCode} 余票设为 ${value}`);
+  } catch (error) {
+    toast("设置失败：" + error.message);
+  }
+}
+
+async function toggleSeat(seatId) {
+  try {
+    const target = snapshot.seats.find((s) => s.seat_id === seatId);
+    if (target && target.source === "sold") {
+      toast("该座位是用户已售，不能手动解锁");
+      return;
+    }
+    await post("/api/dev/seat/toggle", { seat_id: seatId });
+    await refresh();
+  } catch (error) {
+    toast("操作失败：" + error.message);
+  }
+}
+
+function renderOrders() {
+  const orders = snapshot.orders || [];
+  $("orderCount").textContent = orders.length ? `共 ${orders.length} 单` : "";
+  const box = $("orders");
+  if (!orders.length) {
+    box.innerHTML = '<div class="hint">还没有订单。去用户模式下单后会实时出现在这里。</div>';
+    return;
+  }
+  box.innerHTML = orders.slice().reverse().map((order) => `
+    <div style="margin-bottom:11px">
+      <div class="row" style="gap:6px">
+        <b style="font-size:13px">${esc(order.order_id)}</b>
+        <span class="tag">${esc(order.class_code)}</span>
+        ${order.split ? '<span class="tag q">自动分票</span>' : ""}
+        <span class="hint" style="margin-left:auto">${esc(order.rows.join("、"))}</span>
+      </div>
+      ${order.passengers.map((p) => `
+        <div class="paxline">
+          <span class="nm">${esc(p.name)}</span>
+          <span>${esc(p.seat_id || "候补")}</span>
+          <span style="color:${p.quiet ? "var(--quiet)" : "var(--muted)"}">
+            ${p.quiet ? "静音" : ""}</span>
+        </div>`).join("")}
+    </div>`).join("");
+}
+
+async function renderPassengers() {
+  const data = await api("/api/passengers");
+  $("paxCount").textContent = `共 ${data.count} 位（各类人群各一位）`;
+  $("passengers").innerHTML = (data.passengers || []).map((p) => `
+    <div class="paxline">
+      <span class="nm">${esc(p.name)}</span>
+      <span class="tag">${esc(p.type_label)}</span>
+      <span class="hint">${esc(p.id_card || "")}</span>
+    </div>`).join("");
+}
+
+async function refresh() {
+  snapshot = await api("/api/dev/snapshot");
+  $("trainCode").textContent = `车次 ${snapshot.train_code} · 定员 ${snapshot.total_seats}`;
+  renderMetrics();
+  renderCarriages();
+  renderSliders();
+  renderOrders();
+}
+
+async function boot() {
+  $("btnReset").onclick = async () => {
+    if (!confirm("重置系统：清空所有订单与座位占用，乘车人恢复预制状态。继续？")) return;
+    await post("/api/dev/reset", { passengers: true });
+    await refresh();
+    await renderPassengers();
+    toast("系统已重置");
+  };
+  document.querySelectorAll("button[data-fill]").forEach((button) => {
+    button.onclick = async () => {
+      await post("/api/dev/fill", { ratio: Number(button.dataset.fill) });
+      await refresh();
+      toast(`已卖到 ${(Number(button.dataset.fill) * 100).toFixed(0)}%`);
+    };
+  });
+  try {
+    await refresh();
+    await renderPassengers();
+    $("conn").textContent = "已连接";
+  } catch (error) {
+    $("conn").textContent = "未连接";
+    toast("初始化失败：" + error.message);
+  }
+}
+boot();
+</script>
+</body>
+</html>

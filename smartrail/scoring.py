@@ -222,6 +222,15 @@ class Scorer:
             reward += cfg.b5_facility_match
         if p.preference_window and SeatFeature.WINDOW in seat.features:
             reward += cfg.b5_facility_match
+        # 用户主动勾选静音车厢 —— 与下面的"合规性奖励"是两件事。
+        # 若只写合规奖励不写这一条，界面上的勾选框就成了装饰：
+        # 勾与不勾的下座完全一样（这是被实测抓出来的缺陷）。
+        if (
+            p.preference_quiet
+            and seat.is_quiet_carriage
+            and not p.quiet_carriage_blocked
+        ):
+            reward += cfg.t5_quiet_by_request
         if SupportNeed.INDEPENDENT_BLIND in p.support_needs:
             if seat.is_aisle:
                 reward += cfg.b5_facility_match

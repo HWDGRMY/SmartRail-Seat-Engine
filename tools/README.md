@@ -58,7 +58,8 @@ FATAL:mojo\public\cpp\platform\platform_channel.cc: Check failed: . : 拒绝访�
 | `verify_order_page.py` | 批量提交页的页面级验收（自带服务） | 控制台结论 |
 | `verify_composer.py` | OrderEditor 的页面级验收（自带服务） | 控制台结论 |
 | `check_page_js.py` | **在 Node 里真跑页面 JS**：启动、按钮绑定、逐个点击 | 控制台结论 |
-| `verify_served_pages.py` | 检查**服务实际下发**的四个页面（防"本地好了、线上还是旧版"） | 控制台结论 |
+| `verify_served_pages.py` | 检查**服务实际下发**的六个页面（防"本地好了、线上还是旧版"） | 控制台结论 |
+| `verify_ticketing.py` | 12306 购票流程的 HTTP 端到端验收（自带服务） | 控制台结论 |
 | `verify_readme.py` | **校验 README 里的可核查声明**（路径、断言数、文件数） | 控制台结论 |
 | `verify_goal.py` | 目标总验收（读 GitHub API 独立核验） | 控制台结论 |
 | `count_files.py` | 统计各目录的文件数/行数（写文档时取数用） | 控制台结论 |
@@ -88,13 +89,15 @@ python tools/draw_ticket_first.py
 ```bash
 python tools/verify_order_page.py     # 批量提交页
 python tools/verify_composer.py       # OrderEditor（人员构成组单）
+python tools/verify_ticketing.py      # 12306 购票流程（用户模式 + 开发者模式）
 ```
 
 **页面脚本执行检查**（需要 Node.js，且后端要在跑）：
 
 ```bash
-python tools/check_page_js.py         # 在 Node 里真跑 booking 的 JS 并逐个点按钮
-python tools/verify_served_pages.py   # 检查服务实际下发的四个页面
+python tools/check_page_js.py         # 在 Node 里真跑每个页面的 JS 并逐个点按钮
+python tools/check_page_js.py booking # 只检查某一页
+python tools/verify_served_pages.py   # 检查服务实际下发的六个页面
 ```
 
 这两个脚本的由来见下面"为什么必须真跑一遍 JS"。
@@ -107,7 +110,7 @@ python tools/repo_overview.py     # 提交内容构成 + LICENSE 字节一致性
 python tools/count_files.py       # 各目录文件数/行数（改文档时取数）
 ```
 
-> `verify_readme.py` 的存在理由：README 里的"74 条断言""45 个文件"这类数字
+> `verify_readme.py` 的存在理由：README 里的"127 条断言""49 个文件"这类数字
 > **会随代码改动过期**，而人不会每次改代码都回去改文档。与其靠自觉，
 > 不如让机器每次都能验一遍 —— 这也是本项目"配置卫生不变量"思路的延伸。
 

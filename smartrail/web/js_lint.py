@@ -21,7 +21,15 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
+
+# 同 bracket_check：兼容"包内导入"与"直接跑脚本"两种用法
+if __package__ in (None, ""):  # pragma: no cover - 脚本模式
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from smartrail.web.js_lexer import strip_non_code as _strip_non_code
+else:
+    from .js_lexer import strip_non_code as _strip_non_code
 
 # 只有这三类重复声明才是 SyntaxError
 _STRICT = ("let", "const", "class")
@@ -30,8 +38,16 @@ _DECL = re.compile(
 )
 
 
-def _strip_non_code(code: str) -> str:
-    """剔除字符串、模板串与注释，避免把文本里的词当成声明。"""
+def _strip_non_code_legacy(code: str) -> str:
+    """【已废弃】朴素的"见到引号就找下一个同款引号"实现。
+
+    **它不认识模板串的 ``${}`` 插值** —— 遇到嵌套模板串会一路吞到下一个
+    反引号，把中间的真实代码全部当字符串抹掉，导致行号与偏移全错。
+    实测：它只识别出 1 个模板串，而页面里有 74 个反引号。
+
+    现在统一改用 :func:`smartrail.web.js_lexer.strip_non_code`。
+    保留这段仅为说明历史，不参与逻辑。
+    """
     out: list[str] = []
     index = 0
     length = len(code)

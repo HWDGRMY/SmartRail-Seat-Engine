@@ -85,6 +85,19 @@ class Passenger:
     quietness_score: float = 100.0
     preference_window: bool = False
     preference_aisle: bool = False
+    preference_quiet: bool = False
+    """用户**主动勾选**"请优先为我分配静音车厢席位"。
+
+    与"合规奖励" ``t5_quiet_solo_adult`` 是两件事，别混：
+
+    * 后者是**合规性奖励** —— 系统鼓励"本就不会吵的旅客"进静音车厢，
+      与用户是否勾选无关，因此不勾选时也可能被分到静音车厢；
+    * 本字段是**用户偏好** —— 勾了就应当在余票允许时优先满足，
+      不勾也不该被惩罚（静音车厢并非"更高级"，只是不同）。
+
+    早期实现只加了前者、没加这个字段，导致"勾选静音"与"不勾选"的下座
+    **完全一样** —— 界面上的勾选框是个装饰。
+    """
     needs_caregiver: bool = False   # 需照护人员（儿童/婴儿/智力障碍/孕晚期等）
     is_caregiver: bool = False      # 本次出行承担照护职责
     source: DataSource = DataSource.DECLARED
@@ -260,6 +273,24 @@ class Seat:
     is_quiet_carriage: bool = False
     class_code: str = "二等座"
     accessible_zone: bool = False
+    carriage_columns: tuple[str, ...] = ()
+    """本座位**所在区段**的列布局。
+
+    为什么座位要自己记住列布局，而不是去查 ``Carriage.columns``：
+    真实车型里一节车厢可以含多种席别（01 车 = 一等座 2+2 + 商务座 1+2），
+    而 ``Carriage.columns`` 只能表达**一种**布局（取座位最多的那个区段）。
+    于是 01 车的商务座会被误认为在一节 4 列的车厢里 ——
+    凡是用 ``len(carriage.columns)`` 判断"这排有几个座""哪里是过道"的代码都会算错。
+
+    留空时回退到 ``Carriage.columns``（兼容旧构造路径）。
+    """
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        """本座位所在区段的列布局。"""
+        return self.carriage_columns or (
+            "A", "B", "C", "D", "F",
+        )
 
     @property
     def position(self) -> tuple[int, str]:

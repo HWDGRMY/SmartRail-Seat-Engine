@@ -12,6 +12,25 @@ from dataclasses import dataclass, field
 from .models import Seat, TrainFormation
 
 
+def _as_seat_ids(seat_ids: str | tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    """把入参规整成座位 ID 元组，**并拦住"传了单个字符串"这个陷阱**。
+
+    为什么需要这一步：``str`` 本身就是 ``Sequence[str]``，
+    所以 ``mark_occupied("02车01A")`` 语法上完全合法，
+    但它会**逐字符**迭代 —— 结果是占用了 ``0``、``2``、``车``、``1``、``A``
+    这 5 个"座位"，而真正的座位一个都没占上。
+
+    这种错误在类型检查下看不出来，运行时也不报错，只会让余票数字莫名其妙地
+    对不上（实测：一次调用后 occupied 从 0 变成 5）。宁可直接拒绝。
+    """
+    if isinstance(seat_ids, str):
+        raise TypeError(
+            "seat_ids 不能是单个字符串（会被逐字符迭代）。"
+            f"请传序列，例如 [{seat_ids!r}]。"
+        )
+    return tuple(seat_ids)
+
+
 @dataclass(frozen=True)
 class SeatBlock:
     """一个连续空位块。"""
@@ -61,19 +80,19 @@ class BookingState:
         return len(self.available_seats) / self.total_seats
 
     def occupy(self, seat_ids: tuple[str, ...] | list[str], order_id: str = "") -> None:
-        for seat_id in seat_ids:
+        for seat_id in _as_seat_ids(seat_ids):
             self.occupied.add(seat_id)
             if order_id:
                 self.holds[seat_id] = order_id
 
     def release(self, seat_ids: tuple[str, ...] | list[str]) -> None:
-        for seat_id in seat_ids:
+        for seat_id in _as_seat_ids(seat_ids):
             self.occupied.discard(seat_id)
             self.holds.pop(seat_id, None)
 
     def mark_occupied(self, seat_ids: tuple[str, ...] | list[str]) -> None:
         """外部（其他订单 / 售票系统）占座。"""
-        self.occupied.update(seat_ids)
+        self.occupied.update(_as_seat_ids(seat_ids))
 
 
 def cluster_blocks(seats: tuple[Seat, ...] | list[Seat], carriage_columns: dict[int, tuple[str, ...]]) -> list[SeatBlock]:

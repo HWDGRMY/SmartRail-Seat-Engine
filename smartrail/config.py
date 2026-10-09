@@ -61,6 +61,14 @@ class EngineConfig:
     # 注意量级：奖励只用于"在若干等价约束满足方案之间做最后一层偏好排序"，
     # 绝不允许抵消任何一级惩罚（|最大奖励| << 最小惩罚 |Tier 4| = 10）。
     t5_quiet_solo_adult: float = 50.0       # 普通成人单人旅客主动进静音车厢
+    t5_quiet_by_request: float = 40.0
+    """**用户主动勾选**静音车厢时的偏好加成。
+
+    与 ``t5_quiet_solo_adult``（合规性奖励，与用户意愿无关）分开计分：
+    前者是"系统鼓励"，这里才是"用户要求"。取值低于前者，
+    保证"系统合规"仍优先于"用户想要"，两者之和不超过
+    ``max_reward_per_passenger`` 的钳制范围。
+    """
     b5_facility_match: float = 20.0         # 精准匹配设施偏好（过道/近门/近卫生间）
     b5_accessible_match: float = 40.0       # 无障碍专区与轮椅用户匹配
     b5_companion_together: float = 30.0     # 同行人相邻

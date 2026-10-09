@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>铁路购票 · SmartRail</title>
+<style>
+  :root{
+    --blue:#3b8eea; --blue-d:#2f7ad0; --bg:#f2f4f7; --card:#fff;
+    --ink:#333; --muted:#7b8794; --line:#e9edf2; --ok:#2eab5b;
+    --warn:#e6a23c; --bad:#e5504a; --orange:#e8912a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.65 "Microsoft YaHei","PingFang SC",system-ui,sans-serif}
+  a{color:var(--blue);text-decoration:none}
+  button{font-family:inherit}
+  .topbar{background:linear-gradient(90deg,#3b8eea,#5aa9f0);color:#fff;
+    padding:12px 26px;display:flex;align-items:center;gap:18px}
+  .topbar h1{margin:0;font-size:17px;font-weight:600;letter-spacing:.5px}
+  .topbar .nav{display:flex;gap:14px;font-size:13.5px;margin-left:auto;align-items:center}
+  .topbar .nav a{color:#eaf3fd;padding:4px 10px;border-radius:5px}
+  .topbar .nav a.active,.topbar .nav a:hover{background:rgba(255,255,255,.18);color:#fff}
+  .wrap{max-width:1280px;margin:0 auto;padding:16px 20px 60px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    margin-bottom:14px;overflow:hidden}
+  .card > h2{margin:0;padding:12px 16px;font-size:14.5px;font-weight:600;
+    border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  .card > h2 .hint{font-weight:400;font-size:12px;color:var(--muted)}
+  .card .body{padding:14px 16px}
+  .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .btn{border:0;border-radius:6px;background:var(--blue);color:#fff;padding:8px 18px;
+    font-size:13.5px;cursor:pointer}
+  .btn:hover{background:var(--blue-d)}
+  .btn:disabled{background:#c3d6ec;cursor:not-allowed}
+  .btn.ghost{background:#fff;border:1px solid var(--line);color:#556}
+  .btn.ghost:hover{border-color:var(--blue);color:var(--blue-d)}
+  .btn.small{padding:5px 12px;font-size:12.5px}
+  .muted{color:var(--muted)}
+  .hint{color:var(--muted);font-size:12.5px}
+  /* ---- 车次列表 ---- */
+  .train{border:1px solid var(--line);border-radius:9px;margin-bottom:10px;overflow:hidden}
+  .train-head{display:flex;align-items:center;gap:16px;padding:12px 16px;background:#fbfcfd;
+    border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .train-code{font-size:21px;font-weight:700;color:#1f2d3d;min-width:74px}
+  .train-time{font-size:19px;font-weight:600}
+  .train-station{font-size:12.5px;color:var(--muted)}
+  .train-dur{font-size:12.5px;color:var(--muted);text-align:center;min-width:88px}
+  .tag{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11.5px;
+    background:#eef4fd;color:var(--blue-d);border:1px solid #d8e7fa}
+  .tag.quiet{background:#f3f0fd;color:#6d5bd0;border-color:#e2ddfa}
+  .classes{display:flex;flex-wrap:wrap;gap:0}
+  .cls{flex:1 1 190px;padding:11px 16px;border-right:1px solid var(--line);
+    display:flex;align-items:center;gap:12px}
+  .cls:last-child{border-right:0}
+  .cls .name{font-size:15px;font-weight:600;min-width:52px}
+  .cls .price{color:var(--orange);font-weight:700;font-size:16px}
+  .cls .price small{font-weight:400;font-size:11px;color:var(--muted);margin-left:3px}
+  .cls .stock{font-size:13px;min-width:44px}
+  .cls .stock.has{color:var(--ok)}
+  .cls .stock.few{color:var(--orange)}
+  .cls .stock.none{color:#b8c0c9}
+  .cls .btn{margin-left:auto}
+  /* ---- 座位偏好 ---- */
+  .seatrow{display:flex;align-items:center;gap:0;margin:10px 0 6px}
+  .seatcol{width:56px;height:50px;border:1px solid #cfd6de;background:#fff;border-radius:7px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    cursor:pointer;margin-right:5px;user-select:none;transition:.12s}
+  .seatcol:hover{border-color:var(--blue)}
+  .seatcol.on{background:#eaf3fd;border-color:var(--blue);box-shadow:0 0 0 2px #d6e8fb}
+  .seatcol b{font-size:15px;color:#46525f}
+  .seatcol span{font-size:10px;color:var(--muted);margin-top:1px}
+  .seatcol .left{position:relative;top:0}
+  .aisle{width:30px;text-align:center;font-size:11px;color:var(--muted);
+    writing-mode:vertical-rl;letter-spacing:2px;margin:0 4px}
+  .checkline{display:flex;align-items:center;gap:8px;font-size:13px;margin-top:8px}
+  /* ---- 乘车人 ---- */
+  .paxcard{border:1px solid var(--line);border-radius:9px;padding:11px 13px;
+    display:flex;align-items:center;gap:12px;margin-bottom:8px;background:#fff}
+  .paxcard .avatar{width:38px;height:38px;border-radius:50%;background:#eef4fd;
+    display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--blue-d)}
+  .paxcard .info{flex:1;min-width:0}
+  .paxcard .nm{font-size:14.5px;font-weight:600}
+  .paxcard .meta{font-size:12px;color:var(--muted);margin-top:2px}
+  .paxcard.sel{border-color:var(--blue);background:#f7fbff}
+  .empty{padding:26px;text-align:center;color:var(--muted);font-size:13px}
+  .grid2{display:grid;grid-template-columns:1fr 340px;gap:14px;align-items:start}
+  @media (max-width:1000px){.grid2{grid-template-columns:1fr}}
+  /* ---- 弹窗 ---- */
+  .modal{position:fixed;inset:0;background:rgba(20,28,38,.45);display:none;
+    align-items:center;justify-content:center;z-index:50;padding:20px}
+  .modal.on{display:flex}
+  .modal .panel{background:#fff;border-radius:11px;width:100%;max-width:560px;
+    max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
+  .modal h3{margin:0;padding:14px 18px;border-bottom:1px solid var(--line);font-size:15px}
+  .modal .mbody{padding:16px 18px;overflow:auto}
+  .modal .mfoot{padding:12px 18px;border-top:1px solid var(--line);display:flex;
+    gap:10px;justify-content:flex-end}
+  .field{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .field label{width:78px;color:#556;font-size:13px;flex:0 0 auto}
+  .field input,.field select{flex:1;padding:8px 10px;border:1px solid #d5dbe2;
+    border-radius:6px;font-size:13.5px;font-family:inherit;background:#fff}
+  .field input:focus,.field select:focus{outline:0;border-color:var(--blue)}
+  .typelist{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+  .typeitem{border:1px solid var(--line);border-radius:7px;padding:8px 10px;cursor:pointer}
+  .typeitem.on{border-color:var(--blue);background:#f7fbff}
+  .typeitem b{font-size:13px;display:block}
+  .typeitem span{font-size:11px;color:var(--muted)}
+  .notice{padding:9px 12px;border-radius:6px;font-size:13px;line-height:1.7;margin-bottom:10px}
+  .notice.info{background:#f2f7fd;color:#2b5f96;border-left:3px solid var(--blue)}
+  .notice.ok{background:#f0fbf4;color:#217a45;border-left:3px solid var(--ok)}
+  .notice.warn{background:#fdf8f0;color:#8a6a2a;border-left:3px solid var(--warn)}
+  .notice.bad{background:#fdf2f1;color:#b3352f;border-left:3px solid var(--bad)}
+  .ticket{border:1px solid var(--line);border-radius:9px;padding:13px 15px;margin-bottom:10px}
+  .ticket .thead{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  .toast{position:fixed;left:50%;bottom:40px;transform:translateX(-50%);
+    background:rgba(35,45,58,.92);color:#fff;padding:9px 20px;border-radius:7px;
+    font-size:13px;opacity:0;pointer-events:none;transition:.25s;z-index:99}
+  .toast.on{opacity:1}
+  code{background:#f4f6f8;padding:1px 5px;border-radius:4px;font-size:12px}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>中国铁路 12306 · 购票模拟</h1>
+  <div class="nav">
+    <a href="/ticket" class="active">车票</a>
+    <a href="#" id="navPax">乘车人</a>
+    <a href="/dev">开发者模式</a>
+    <a href="/">座位图工具</a>
+    <span class="muted" id="conn" style="color:#dfeaf8;font-size:12px"></span>
+  </div>
+</div>
+
+<div class="wrap">
+  <!-- 1. 车次列表 -->
+  <div class="card">
+    <h2>车次列表 <span class="hint">北京南 → 上海虹桥 · 10月19日 周一</span></h2>
+    <div class="body" id="trainList"><div class="empty">加载中…</div></div>
+  </div>
+
+  <div class="grid2">
+    <div>
+      <!-- 2. 确认订单 -->
+      <div class="card">
+        <h2>确认订单 <span class="hint" id="orderTrain"></span></h2>
+        <div class="body">
+          <div id="orderSeatCount" class="hint" style="margin-bottom:10px"></div>
+
+          <!-- 席别 -->
+          <div class="row" style="align-items:stretch">
+            <div id="classPicker" style="display:flex;gap:9px;flex-wrap:wrap"></div>
+          </div>
+
+          <!-- 选座服务：只有一排 -->
+          <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
+            <div class="row">
+              <b style="font-size:13.5px">选座服务</b>
+              <span class="hint" id="seatHint">可选择 1 个座位偏好</span>
+            </div>
+            <div class="seatrow" id="seatRow"></div>
+            <label class="checkline">
+              <input type="checkbox" id="chkQuiet">
+              请优先为我分配<b>“静音车厢”</b>席位
+              <span class="hint" id="quietHint"></span>
+            </label>
+            <div class="hint" style="margin-top:6px">
+              若剩余席位无法满足您的需求，系统将自动为您分配席位。
+              为保护隐私，本页不展示整列车的座位分布。
+            </div>
+          </div>
+
+          <!-- 乘车人 -->
+          <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
+            <div class="row">
+              <b style="font-size:13.5px">乘车人</b>
+              <span class="hint" id="paxHint"></span>
+              <button class="btn ghost small" id="btnPickPax" style="margin-left:auto">
+                + 选择乘车人</button>
+            </div>
+            <div id="selectedPax" style="margin-top:10px"></div>
+          </div>
+
+          <div id="verdictBox" style="margin-top:14px"></div>
+
+          <div class="row" style="margin-top:14px">
+            <button class="btn" id="btnSubmit" disabled>提交订单</button>
+            <span class="hint">提交订单表示已阅读并同意《铁路旅客运输规程》</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. 我的订单 -->
+    <div>
+      <div class="card">
+        <h2>我的订单 <span class="hint" id="orderCount"></span></h2>
+        <div class="body" id="myOrders">
+          <div class="empty">还没有订单。</div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>本列车信息</h2>
+        <div class="body" id="trainInfo" style="font-size:13px"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 选择乘车人弹窗 -->
+<div class="modal" id="modalPick">
+  <div class="panel">
+    <h3>选择乘车人</h3>
+    <div class="mbody">
+      <button class="btn ghost" id="btnAddPax" style="width:100%;margin-bottom:14px">
+        + 添加乘车人</button>
+      <div class="hint" style="text-align:center;margin-bottom:12px">
+        已选 <b id="pickCount">0</b> 人（顺序即选座优先顺序）
+      </div>
+      <div id="pickList"></div>
+    </div>
+    <div class="mfoot">
+      <button class="btn ghost" id="btnPickCancel">取消</button>
+      <button class="btn" id="btnPickOk">完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- 添加乘车人弹窗 -->
+<div class="modal" id="modalAdd">
+  <div class="panel">
+    <h3>添加乘车人</h3>
+    <div class="mbody">
+      <div class="field"><label>姓名</label>
+        <input id="paxName" placeholder="请输入真实姓名，以便购票"></div>
+      <div class="field"><label>证件号码</label>
+        <input id="paxId" placeholder="用于身份核验"></div>
+      <div class="field"><label>手机号码</label>
+        <input id="paxPhone" placeholder="+86 | 请填写乘车人手机号"></div>
+      <div style="margin:6px 0 8px;font-size:13px;color:#556">
+        优惠（待）类型 / 人群类型</div>
+      <div class="typelist" id="typeList"></div>
+    </div>
+    <div class="mfoot">
+      <button class="btn ghost" id="btnAddCancel">取消</button>
+      <button class="btn" id="btnAddOk">提交</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const ROW_COLUMNS = ["A", "B", "C", "D", "F"];
+
+let trains = [];
+let currentTrain = null;
+let currentClass = "二等座";
+let seatPref = [];          // 偏好的列
+let quietPref = false;
+let allPassengers = [];
+let selected = [];          // 已选乘车人 profile_id，顺序即优先顺序
+let typeCatalog = [];
+let pendingType = "adult";
+let orders = [];
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const text = await response.text();
+  let payload = null;
+  try { payload = text ? JSON.parse(text) : null; } catch (e) { payload = null; }
+  if (!response.ok) {
+    const detail = (payload && (payload.detail || (payload.errors || []).join("；")))
+      || `HTTP ${response.status}`;
+    throw new Error(detail);
+  }
+  return payload;
+}
+function post(path, body) {
+  return api(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+}
+let toastTimer = null;
+function toast(message) {
+  const box = $("toast");
+  box.textContent = message;
+  box.classList.add("on");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => box.classList.remove("on"), 2400);
+}
+const esc = (s) => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;");
+
+/* ---------------- 车次列表 ---------------- */
+function stockClass(status) {
+  if (status === "无") return "none";
+  if (status === "有票") return "has";
+  return "few";
+}
+
+function renderTrains() {
+  const box = $("trainList");
+  if (!trains.length) { box.innerHTML = '<div class="empty">没有可用车次。</div>'; return; }
+  box.innerHTML = trains.map((train, ti) => `
+    <div class="train">
+      <div class="train-head">
+        <span class="train-code">${esc(train.train_code)}</span>
+        <span class="train-time">${esc(train.depart)}</span>
+        <span class="train-station">${esc(train.from)}</span>
+        <span class="train-dur">── ${esc(train.duration)} ──</span>
+        <span class="train-time">${esc(train.arrive)}</span>
+        <span class="train-station">${esc(train.to)}</span>
+        <span class="tag">${esc(train.tag)}</span>
+        ${train.quiet_carriages.map((n) =>
+          `<span class="tag quiet">${String(n).padStart(2, "0")}车 静音</span>`).join("")}
+      </div>
+      <div class="classes">
+        ${train.classes.map((item) => `
+          <div class="cls">
+            <span class="name">${esc(item.class_code.replace("座", ""))}</span>
+            <span class="price">¥${item.price}<small>${esc(item.discount)}</small></span>
+            <span class="stock ${stockClass(item.status)}">${esc(item.status)}</span>
+            <button class="btn small" data-train="${ti}"
+              data-class="${esc(item.class_code)}"
+              ${item.bookable ? "" : "disabled"}>预订</button>
+          </div>`).join("")}
+      </div>
+    </div>`).join("");
+  box.querySelectorAll("button[data-class]").forEach((button) => {
+    button.onclick = () => pickTrain(Number(button.dataset.train), button.dataset.class);
+  });
+}
+
+function pickTrain(index, classCode) {
+  currentTrain = trains[index];
+  currentClass = classCode;
+  $("orderTrain").textContent =
+    `${currentTrain.train_code} · ${currentTrain.depart} 开 · ${classCode}`;
+  renderClassPicker();
+  loadSeatRows();
+  refreshVerdict();
+  document.querySelector(".grid2").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/* ---------------- 席别 ---------------- */
+function renderClassPicker() {
+  if (!currentTrain) { $("classPicker").innerHTML = ""; return; }
+  $("classPicker").innerHTML = currentTrain.classes.map((item) => {
+    const on = item.class_code === currentClass;
+    return `<div class="cls" style="border:1px solid ${on ? "var(--blue)" : "var(--line)"};
+        border-radius:9px;background:${on ? "#f7fbff" : "#fff"};flex:0 0 auto;min-width:180px">
+      <span class="name">${esc(item.class_code.replace("座", ""))}</span>
+      <span class="price">¥${item.price}<small>${esc(item.discount)}</small></span>
+      <span class="stock ${stockClass(item.status)}">${esc(item.status)}</span>
+      <button class="btn small ${on ? "" : "ghost"}" data-cls="${esc(item.class_code)}"
+        ${item.bookable ? "" : "disabled"}>${on ? "已选" : "选择"}</button>
+    </div>`;
+  }).join("");
+  $("classPicker").querySelectorAll("button[data-cls]").forEach((button) => {
+    button.onclick = () => {
+      currentClass = button.dataset.cls;
+      renderClassPicker();
+      loadSeatRows();
+      refreshVerdict();
+    };
+  });
+}
+
+/* ---------------- 选座服务（只有一排） ---------------- */
+async function loadSeatRows() {
+  try {
+    const data = await api(
+      `/api/trains/seat-row?class_code=${encodeURIComponent(currentClass)}`);
+    const map = {};
+    (data.columns || []).forEach((item) => { map[item.col] = item; });
+    let html = "";
+    ROW_COLUMNS.forEach((col) => {
+      const item = map[col];
+      if (!item) return;
+      if (col === "D") html += '<span class="aisle">过道</span>';
+      const on = seatPref.includes(col);
+      html += `<div class="seatcol${on ? " on" : ""}" data-col="${col}"
+          title="余票 ${item.remaining}/${item.total}">
+        <b>${col}</b><span>${item.remaining}</span></div>`;
+    });
+    $("seatRow").innerHTML = html;
+    $("seatRow").querySelectorAll(".seatcol").forEach((node) => {
+      node.onclick = () => {
+        const col = node.dataset.col;
+        seatPref = seatPref.includes(col)
+          ? seatPref.filter((x) => x !== col) : [...seatPref, col];
+        node.classList.toggle("on");
+        $("seatHint").textContent = seatPref.length
+          ? `已选偏好：${seatPref.join("、")}` : "可选择 1 个座位偏好";
+        refreshVerdict();
+      };
+    });
+    $("seatHint").textContent = seatPref.length
+      ? `已选偏好：${seatPref.join("、")}` : "可选择 1 个座位偏好";
+    const quietRemaining = (data.columns || [])
+      .reduce((sum, item) => sum + item.remaining, 0);
+    $("quietHint").textContent = currentTrain
+      ? `（本列 ${currentTrain.quiet_carriages.map((n) =>
+          String(n).padStart(2, "0")).join("、")} 车；${currentClass}余票 ${quietRemaining}）`
+      : "";
+  } catch (error) {
+    $("seatRow").innerHTML = `<span class="hint">选座信息加载失败：${esc(error.message)}</span>`;
+  }
+}
+
+/* ---------------- 乘车人 ---------------- */
+function renderSelected() {
+  const box = $("selectedPax");
+  if (!selected.length) {
+    box.innerHTML = `<div class="notice info">
+      请先<b>添加乘车人</b>才能提交订单。点右上角「+ 选择乘车人」，
+      列表为空时可直接添加；也可以只勾选已有的预制乘车人。</div>`;
+    $("paxHint").textContent = "";
+    return;
+  }
+  const byId = {};
+  allPassengers.forEach((p) => { byId[p.profile_id] = p; });
+  box.innerHTML = selected.map((id, index) => {
+    const p = byId[id];
+    if (!p) return "";
+    return `<div class="paxcard sel">
+      <span class="avatar">${index + 1}</span>
+      <div class="info">
+        <div class="nm">${esc(p.name)}
+          <span class="tag">${esc(p.type_label)}</span>
+          ${p.needs_caregiver ? '<span class="tag quiet">需陪同</span>' : ""}
+        </div>
+        <div class="meta">${esc(p.id_card || "—")} · ${esc(p.type_desc)}</div>
+      </div>
+      <button class="btn ghost small" data-drop="${esc(id)}">移除</button>
+    </div>`;
+  }).join("");
+  box.querySelectorAll("button[data-drop]").forEach((button) => {
+    button.onclick = () => {
+      selected = selected.filter((x) => x !== button.dataset.drop);
+      renderSelected(); refreshVerdict();
+    };
+  });
+  $("paxHint").textContent = `已选 ${selected.length} 人`;
+}
+
+function renderPickList() {
+  const box = $("pickList");
+  if (!allPassengers.length) {
+    box.innerHTML = `<div class="empty">乘车人列表为空，请先添加乘车人。</div>`;
+    return;
+  }
+  box.innerHTML = allPassengers.map((p) => {
+    const on = selected.includes(p.profile_id);
+    return `<div class="paxcard${on ? " sel" : ""}" data-id="${esc(p.profile_id)}"
+        style="cursor:pointer">
+      <input type="checkbox" ${on ? "checked" : ""} style="pointer-events:none">
+      <div class="info">
+        <div class="nm">${esc(p.name)}
+          <span class="tag">${esc(p.type_label)}</span>
+          ${p.needs_caregiver ? '<span class="tag quiet">需陪同</span>' : ""}
+          ${p.is_caregiver && !p.needs_caregiver ? '<span class="tag">可陪同</span>' : ""}
+        </div>
+        <div class="meta">${esc(p.id_card || "—")} · 票价系数 ${p.price_ratio}</div>
+      </div>
+    </div>`;
+  }).join("");
+  box.querySelectorAll(".paxcard").forEach((node) => {
+    node.onclick = () => {
+      const id = node.dataset.id;
+      if (selected.includes(id)) {
+        selected = selected.filter((x) => x !== id);
+      } else if (selected.length >= 5) {
+        toast("一个订单最多 5 位乘车人"); return;
+      } else {
+        selected = [...selected, id];
+      }
+      node.classList.toggle("sel", selected.includes(id));
+      const box2 = node.querySelector("input");
+      if (box2) box2.checked = selected.includes(id);
+      $("pickCount").textContent = selected.length;
+    };
+  });
+  $("pickCount").textContent = selected.length;
+}
+
+function renderTypeList() {
+  $("typeList").innerHTML = typeCatalog.map((item) => `
+    <div class="typeitem${item.id === pendingType ? " on" : ""}" data-type="${esc(item.id)}">
+      <b>${esc(item.label)}</b><span>${esc(item.desc)}</span>
+    </div>`).join("");
+  $("typeList").querySelectorAll(".typeitem").forEach((node) => {
+    node.onclick = () => {
+      pendingType = node.dataset.type;
+      $("typeList").querySelectorAll(".typeitem")
+        .forEach((n) => n.classList.toggle("on", n.dataset.type === pendingType));
+    };
+  });
+}
+
+async function loadPassengers() {
+  const data = await api("/api/passengers");
+  allPassengers = data.passengers || [];
+  renderSelected();
+  renderPickList();
+}
+
+/* ---------------- 判定与提交 ---------------- */
+async function refreshVerdict() {
+  const box = $("verdictBox");
+  $("btnSubmit").disabled = true;
+  if (!currentTrain) {
+    box.innerHTML = `<div class="notice info">请先在上方选择一个车次席别。</div>`;
+    return;
+  }
+  if (!selected.length) {
+    box.innerHTML = `<div class="notice info">请先选择乘车人。</div>`;
+    return;
+  }
+  try {
+    const data = await post("/api/trains/evaluate", {
+      class_code: currentClass,
+      profile_ids: selected,
+      preference: { columns: seatPref, quiet: quietPref },
+    });
+    const v = data.verdict || {};
+    const parts = [];
+    (data.errors || []).forEach((e) => {
+      parts.push(`<div class="notice bad">${esc(e)}</div>`);
+    });
+    if (!data.errors || !data.errors.length) {
+      if (v.split_needed) {
+        parts.push(`<div class="notice warn"><b>需要自动分票</b>：${esc(v.reason)}。
+          同排最长连续可用座位 ${v.largest_run} 个。${esc(v.suggestion || "")}</div>`);
+      } else {
+        parts.push(`<div class="notice ok">余票可以满足选座要求，
+          ${data.passenger_count} 人可安排在同一排。</div>`);
+      }
+    }
+    box.innerHTML = parts.join("");
+    $("btnSubmit").disabled = (data.errors || []).length > 0;
+  } catch (error) {
+    box.innerHTML = `<div class="notice bad">判定失败：${esc(error.message)}</div>`;
+  }
+}
+
+async function submitOrder() {
+  $("btnSubmit").disabled = true;
+  try {
+    const result = await post("/api/tickets/book", {
+      class_code: currentClass,
+      profile_ids: selected,
+      preference: { columns: seatPref, quiet: quietPref },
+    });
+    const order = result.order || {};
+    const rows = (order.rows || []).join("、");
+    const splitNote = order.split
+      ? `<div class="notice warn">系统已<b>自动分票</b>：${esc(rows)}</div>`
+      : `<div class="notice ok">已按选座偏好安排：${esc(rows)}</div>`;
+    $("verdictBox").innerHTML = splitNote + `<div class="notice info">
+      出票 ${order.seated} 张${order.waitlisted ? `，候补 ${order.waitlisted} 张` : ""}。
+      座位已同步到<b>开发者模式</b>的座位图。</div>`;
+    toast(`出票成功：${order.seated} 张`);
+    await loadPassengers();
+    await loadTrains();
+    await loadOrders();
+    await loadSeatRows();
+    renderSelected();
+  } catch (error) {
+    $("verdictBox").innerHTML =
+      `<div class="notice bad">提交失败：${esc(error.message)}</div>`;
+    toast("提交失败：" + error.message);
+  } finally {
+    $("btnSubmit").disabled = false;
+  }
+}
+
+/* ---------------- 我的订单 ---------------- */
+async function loadOrders() {
+  const data = await api("/api/tickets/orders");
+  orders = data.orders || [];
+  $("orderCount").textContent = orders.length ? `共 ${orders.length} 单` : "";
+  const box = $("myOrders");
+  if (!orders.length) {
+    box.innerHTML = '<div class="empty">还没有订单。</div>';
+    return;
+  }
+  box.innerHTML = orders.slice().reverse().map((order) => `
+    <div class="ticket">
+      <div class="thead">
+        <b>${esc(order.order_id)}</b>
+        <span class="tag">${esc(order.class_code)}</span>
+        ${order.split ? '<span class="tag quiet">自动分票</span>' : ""}
+      </div>
+      <div class="hint" style="margin-bottom:6px">
+        ${esc(order.train_code || "")} ·
+        出票 ${order.seated} 张${order.waitlisted ? ` · 候补 ${order.waitlisted}` : ""}
+        ${order.rows && order.rows.length ? ` · ${esc(order.rows.join("、"))}` : ""}
+      </div>
+      ${order.passengers.map((p) => `
+        <div class="hint" style="display:flex;gap:8px">
+          <span style="flex:1">${esc(p.name)}</span>
+          <span>${esc(p.seat_id || "候补")}</span>
+        </div>`).join("")}
+    </div>`).join("");
+}
+
+async function loadTrains() {
+  const data = await api("/api/trains");
+  trains = data.trains || [];
+  renderTrains();
+  if (currentTrain) {
+    const same = trains.find((t) => t.train_code === currentTrain.train_code);
+    if (same) { currentTrain = same; renderClassPicker(); }
+  }
+  const info = $("trainInfo");
+  if (trains.length) {
+    const t = trains[0];
+    info.innerHTML = `
+      <div>车次 <b>${esc(t.train_code)}</b> · ${esc(t.from)} → ${esc(t.to)}</div>
+      <div class="hint">编组 16 节 · 全列定员 ${t.total_seats} 座</div>
+      <div class="hint">静音车厢：${t.quiet_carriages.map((n) =>
+        String(n).padStart(2, "0") + "车").join("、")}</div>
+      <div class="hint">无障碍车厢：04 车、12 车</div>
+      <div class="hint">用户端不展示整列座位分布，只提供选座偏好。</div>`;
+  }
+}
+
+/* ---------------- 启动 ---------------- */
+async function boot() {
+  $("navPax").onclick = (event) => {
+    event.preventDefault();
+    $("modalPick").classList.add("on");
+    renderPickList();
+  };
+  $("btnPickPax").onclick = () => {
+    $("modalPick").classList.add("on");
+    renderPickList();
+  };
+  $("btnPickCancel").onclick = () => $("modalPick").classList.remove("on");
+  $("btnPickOk").onclick = () => {
+    $("modalPick").classList.remove("on");
+    renderSelected();
+    refreshVerdict();
+  };
+  $("btnAddPax").onclick = () => {
+    $("modalPick").classList.remove("on");
+    $("modalAdd").classList.add("on");
+    $("paxName").value = ""; $("paxId").value = ""; $("paxPhone").value = "";
+    renderTypeList();
+  };
+  $("btnAddCancel").onclick = () => $("modalAdd").classList.remove("on");
+  $("btnAddOk").onclick = async () => {
+    try {
+      const created = await post("/api/passengers/add", {
+        name: $("paxName").value,
+        type_id: pendingType,
+        id_card: $("paxId").value,
+        phone: $("paxPhone").value,
+      });
+      toast(`已添加乘车人 ${created.name}`);
+      $("modalAdd").classList.remove("on");
+      await loadPassengers();
+      selected = [...selected, created.profile_id];
+      renderSelected();
+      $("modalPick").classList.add("on");
+      renderPickList();
+      refreshVerdict();
+    } catch (error) {
+      toast("添加失败：" + error.message);
+    }
+  };
+  $("chkQuiet").onchange = (event) => {
+    quietPref = event.target.checked;
+    refreshVerdict();
+  };
+  $("btnSubmit").onclick = submitOrder;
+
+  try {
+    const cat = await api("/api/passengers/types");
+    typeCatalog = cat.types || [];
+    await loadTrains();
+    await loadPassengers();
+    await loadOrders();
+    $("conn").textContent = "已连接";
+  } catch (error) {
+    $("conn").textContent = "未连接";
+    toast("初始化失败：" + error.message);
+  }
+  renderSelected();
+  refreshVerdict();
+}
+boot();
+</script>
+</body>
+</html>

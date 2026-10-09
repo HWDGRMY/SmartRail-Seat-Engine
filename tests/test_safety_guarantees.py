@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from smartrail import SeatEngine, build_formation, crh_16_car_formation, mini_formation
-from smartrail.carriage import CarriageSpec
+from smartrail.carriage import G25_EXPECTED_SEATS, CarriageSpec
 from smartrail.config import EngineConfig
 from smartrail.credit import BLOCK_THRESHOLD, CreditLedger
 from smartrail.fixtures import (
@@ -430,14 +430,19 @@ def test_large_group_and_waitlist() -> None:
 
 
 def test_manhattan_distance_model() -> None:
-    """空间代价矩阵：跨车厢 10000，同排跨过道 2，紧邻 1。"""
+    """空间代价矩阵：跨车厢 10000，同排跨过道 2，紧邻 1。
+
+    注意：**不能再用 01 车**做这个测试。01 车是「一等/商务座车」，
+    布局是 2+2（ACDF），根本没有 B 座；而且它被拆成两个区段
+    （一等座 8 排 + 商务座 2 排）。改用 02 车（标准二等座 3+2，ABCDF）。
+    """
     print("[空间] 曼哈顿距离模型")
     formation = crh_16_car_formation()
-    a = formation.seat("01车01A")
-    b = formation.seat("01车01B")
-    cross_aisle = formation.seat("01车01C")
-    d = formation.seat("01车01D")
-    far = formation.seat("09车01A")
+    a = formation.seat("02车01A")
+    b = formation.seat("02车01B")
+    cross_aisle = formation.seat("02车01C")
+    d = formation.seat("02车01D")
+    far = formation.seat("10车01A")
     check(a.manhattan_to(b) == 1, "同排相邻 = 1")
     check(cross_aisle.manhattan_to(d) == 2, "同排跨过道 = 2")
     check(a.manhattan_to(far) >= 10_000, f"跨车厢 >= 10000（实际 {a.manhattan_to(far)}）")
@@ -547,63 +552,124 @@ def test_mini_formation_shape() -> None:
 
 
 def test_real_formation_seat_counts_are_realistic() -> None:
-    """16 节编组的座位数必须接近真实 CRH，且**各车厢排数不同**。
+    """16 节编组的定员必须与车型图**逐车一致**。
 
-    这条测试来自用户抓到的一个真实缺陷：早期实现让 16 节车厢共用同一个排数
+    这条测试来自用户抓到的第一个真实缺陷：早期实现让 16 节车厢共用同一个排数
     （默认 17），只靠"减少列数"区分坐席，于是商务座被算成
-    ``3 列 × 17 排 = 51 座`` —— 而现实中商务座是 1+2 布局、整节约 10-18 座。
+    ``3 列 × 17 排 = 51 座`` —— 而现实中商务座是 1+2 布局、整节只有 5-18 座。
 
     为什么必须守住：座位数是**容量上限**，直接决定"满座时会不会拒票""无障碍
     专区能服务几位轮椅旅客"。一个把商务座容量夸大 4 倍的模型，会让压力测试
     得出过于乐观的结论。
+
+    第二个缺陷是"一节车厢只能有一种席别"：真实车型里 01 车是
+    「一等座 32 + 商务座 5」、08 车是「二等座 43 + 商务座 6」。
+    后来引入 :class:`~smartrail.carriage.Block` 区段模型才表达得出来。
     """
-    print("[编组] 真实编组的座位数")
+    print("[编组] 车型图定员逐车核对")
     formation = crh_16_car_formation()
     per_carriage = {
         carriage.number: len([s for s in formation.seats if s.carriage == carriage.number])
         for carriage in formation.carriages
     }
-    by_class: dict[str, list[int]] = {}
-    for carriage in formation.carriages:
-        by_class.setdefault(carriage.class_code, []).append(per_carriage[carriage.number])
 
     check(len(formation.carriages) == 16, f"16 节编组（实际 {len(formation.carriages)}）")
+    mismatch = {
+        number: (expected, per_carriage.get(number))
+        for number, expected in G25_EXPECTED_SEATS.items()
+        if per_carriage.get(number) != expected
+    }
+    check(not mismatch, f"逐车定员与车型图一致（不符：{mismatch or '无'}）")
     check(
         len({carriage.rows for carriage in formation.carriages}) > 1,
         f"各车厢排数**不完全相同**（实际 {sorted({c.rows for c in formation.carriages})}）",
     )
 
-    business = by_class["商务座"]
-    first = by_class["一等座"]
-    second = by_class["二等座"]
+    # 席位汇总：按"座位数"统计，而不是按"车厢主席别"——
+    # 混合车厢（01/08/09/16）用 carriage.class_code 会漏掉次要席别。
+    seat_totals: dict[str, int] = {}
+    for seat in formation.seats:
+        seat_totals[seat.class_code] = seat_totals.get(seat.class_code, 0) + 1
     check(
-        all(10 <= count <= 18 for count in business),
-        f"单节商务座 10-18 座（实际 {business}）",
+        seat_totals.get("商务座") == 22,
+        f"商务座合计 22（实际 {seat_totals.get('商务座')}）"
+        f" —— 与 CR400AF-A 公开资料的 22 座一致",
     )
     check(
-        all(40 <= count <= 64 for count in first),
-        f"单节一等座 40-64 座（实际 {first}）",
+        seat_totals.get("一等座") == 64,
+        f"一等座合计 64（实际 {seat_totals.get('一等座')}）",
     )
     check(
-        all(64 <= count <= 90 for count in second),
-        f"单节二等座 64-90 座（实际 {second}）",
+        seat_totals.get("二等座") == 1152,
+        f"二等座合计 1152（实际 {seat_totals.get('二等座')}）",
     )
     check(
-        max(business) < min(first) and max(first) < min(second),
-        "座位数按坐席严格递减：商务座 < 一等座 < 二等座",
+        sum(seat_totals.values()) == 1238,
+        f"全列定员 1238（实际 {sum(seat_totals.values())}）",
+    )
+    check(
+        seat_totals["商务座"] < seat_totals["一等座"] < seat_totals["二等座"],
+        "席位量级：商务座 < 一等座 < 二等座",
     )
 
-    columns_per_class = {
-        carriage.class_code: len(carriage.columns) for carriage in formation.carriages
-    }
+    # 每种席别的列数必须符合国铁惯例。**按座位自己的区段**判断，
+    # 而不是查 carriage.columns —— 混合车厢里后者只反映主席别，
+    # 会把 01 车的商务座算成"在 4 列车厢里"。
+    columns_by_class: dict[str, set[int]] = {}
+    for seat in formation.seats:
+        columns_by_class.setdefault(seat.class_code, set()).add(len(seat.columns))
     check(
-        columns_per_class["二等座"] == 5
-        and columns_per_class["一等座"] == 4
-        and columns_per_class["商务座"] == 3,
-        f"列布局符合国铁惯例（{columns_per_class}）",
+        columns_by_class.get("二等座") == {5},
+        f"二等座 3+2（实际列数集合 {columns_by_class.get('二等座')}）",
     )
+    check(
+        columns_by_class.get("一等座") == {4},
+        f"一等座 2+2（实际列数集合 {columns_by_class.get('一等座')}）",
+    )
+    check(
+        columns_by_class.get("商务座") == {3},
+        f"商务座 1+2（实际列数集合 {columns_by_class.get('商务座')}）",
+    )
+
     accessible = [s for s in formation.seats if s.in_accessible_zone()]
     check(len(accessible) >= 6, f"无障碍专区有足够座位（{len(accessible)} 个）")
+
+
+def test_quiet_carriages_are_03_and_11() -> None:
+    """静音车厢必须是 03 车与 11 车。
+
+    需求原文：「根据图片中的座位布局，系统需将 **03车和11车** 明确标记为静音车厢。」
+    这两节是同型车（TP03），对称分布 —— 不是随手挑的。
+    """
+    print("[编组] 静音车厢标记")
+    formation = crh_16_car_formation()
+    quiet = sorted(c.number for c in formation.carriages if c.is_quiet_carriage)
+    check(quiet == [3, 11], f"静音车厢 = 03/11（实际 {quiet}）")
+    check(
+        all(s.is_quiet_carriage for s in formation.seats if s.carriage in (3, 11)),
+        "03/11 车的座位都带静音标记",
+    )
+    check(
+        not any(s.is_quiet_carriage for s in formation.seats if s.carriage not in (3, 11)),
+        "其它车厢的座位都不带静音标记",
+    )
+    quiet_seats = [s for s in formation.seats if s.is_quiet_carriage]
+    check(len(quiet_seats) == 186, f"静音座位共 186 个（实际 {len(quiet_seats)}）")
+
+
+def test_mixed_class_carriage_blocks() -> None:
+    """混合车厢：01/09 车「一等32+商务5」，08/16 车「二等43+商务6」。"""
+    print("[编组] 混合席别车厢")
+    formation = crh_16_car_formation()
+    for number, expected in ((1, {"一等座": 32, "商务座": 5}),
+                             (9, {"一等座": 32, "商务座": 5}),
+                             (8, {"二等座": 43, "商务座": 6}),
+                             (16, {"二等座": 43, "商务座": 6})):
+        actual: dict[str, int] = {}
+        for seat in formation.seats:
+            if seat.carriage == number:
+                actual[seat.class_code] = actual.get(seat.class_code, 0) + 1
+        check(actual == expected, f"{number:02d} 车构成 {actual}（期望 {expected}）")
 
 
 def test_every_config_field_is_actually_used() -> None:

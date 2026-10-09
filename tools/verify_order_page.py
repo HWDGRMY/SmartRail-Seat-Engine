@@ -111,15 +111,29 @@ try:
 
     print()
     print("=== 4) 出票优先：特殊席位不够也照常出票 + 提示/询问 ===")
-    # 单次请求内自足：先用 7 张轮椅订单占满专区（10 座），再放溢出的单。
+    # 单次请求内自足：先把无障碍专区占满，再放溢出的单。
     # 不能依赖"上一节刚好占掉了座位"——那是测试之间的隐式耦合。
+    #
+    # 专区分两处（04 车与 12 车，各 2 排 = 10 座），合计 **20 座**。
+    # 早期这里写死"7 张单占满 10 座"，是按"只有 04 车"的旧编组算的；
+    # 编组改成 04+12 后就占不满了，于是"站车协助提示"不再触发。
+    # 现在按实际座位数生成填满订单，编组再变也不会失效。
+    from smartrail.api import service as _service
+
+    engine = _service.create_engine()
+    zone_seats = sum(1 for s in engine.formation.seats if s.in_accessible_zone())
+    print(f"      无障碍专区实际座位数：{zone_seats}")
+    # 每张填满单放 2 位轮椅 -> 需要的订单数
+    per_order = 2
+    fill_orders = -(-zone_seats // per_order)
     orders = [
         {
             "order_id": f"FILL-{n}",
             "note": f"第 {n} 张轮椅订单",
-            "passengers": [{"key": "wheelchair"}, {"key": "caregiver"}],
+            "passengers": [{"key": "wheelchair"}] * per_order
+            + [{"key": "caregiver"}] * per_order,
         }
-        for n in range(1, 8)
+        for n in range(1, fill_orders + 1)
     ]
     orders.append(
         {

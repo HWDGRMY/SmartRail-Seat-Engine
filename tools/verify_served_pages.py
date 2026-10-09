@@ -28,8 +28,16 @@ def check(ok: bool, message: str) -> None:
         problems.append(message)
 
 
-for name, path in (("booking", "/booking"), ("ticket-first", "/ticket-first"),
-                   ("acceptance", "/acceptance"), ("index", "/")):
+PAGES: tuple[tuple[str, str], ...] = (
+    ("booking", "/booking"),
+    ("ticket-first", "/ticket-first"),
+    ("acceptance", "/acceptance"),
+    ("index", "/"),
+    ("ticketing", "/ticket"),
+    ("developer", "/dev"),
+)
+
+for name, path in PAGES:
     with urllib.request.urlopen(BASE + path, timeout=30) as response:
         html = response.read().decode("utf-8")
     print(f"=== {path}（{len(html)} 字符）===")
@@ -54,20 +62,20 @@ for name, path in (("booking", "/booking"), ("ticket-first", "/ticket-first"),
     check(not check_html_tags(html), f"标签配对（{check_html_tags(html)[:2] or '无'}）")
     print()
 
-# 5) 用 Node 在服务版本上真跑一遍 boot()
-print("=== Node 实跑服务版 booking JS ===")
-with urllib.request.urlopen(BASE + "/booking", timeout=30) as response:
-    served = response.read().decode("utf-8")
-temp = Path(tempfile.gettempdir()) / "served_booking_check.html"
-temp.write_text(served, encoding="utf-8")
+# 5) 用 Node 在服务版本上真跑一遍 boot()，并逐个点按钮
+print("=== Node 实跑服务版页面的 JS ===")
 harness = ROOT / "tools" / "check_page_js.py"
 result = subprocess.run(
     [str(ROOT / ".venv/Scripts/python.exe"), "-B", "-u", str(harness)],
     capture_output=True, text=True, encoding="utf-8", errors="ignore", cwd=str(ROOT),
 )
-tail = "\n".join((result.stdout or "").strip().splitlines()[-3:])
-print(tail)
-check("15/15" in (result.stdout or ""), "服务版页面的 boot() 正常、按钮全部绑定")
+output = result.stdout or ""
+print("\n".join(output.strip().splitlines()[-8:]))
+check(output.count("：OK") >= 3,
+      f"三个交互页面的 boot() 正常、按钮全部绑定（OK 计数 {output.count('：OK')}）")
+check("未绑定按钮" not in output and "点击报错" not in output,
+      "没有未绑定按钮或点击异常")
+_ = tempfile  # 保留 import 供将来落盘调试用
 
 print()
 if problems:

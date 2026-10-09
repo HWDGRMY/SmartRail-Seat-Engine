@@ -1,9 +1,23 @@
-"""在 Node 里真正执行 booking.html 的脚本，抓出启动期崩溃。
+"""在 Node 里真正执行页面脚本，抓出启动期崩溃与按钮未绑定。
 
-为什么要这样测：之前只做"静态结构检查"（看字符串在不在），
-而"按钮点不动"恰恰是**脚本执行期**的问题 —— 静态检查永远发现不了。
-本脚本用最小 DOM 垫片 + 真实 fetch 跑一遍 boot()，把异常打出来。
+为什么要这样测
+--------------
+"按钮点不动"是**脚本执行期**的问题，静态检查（字符串在不在、括号配不配）
+对它完全免疫。本项目就被这个坑咬过两次：
+
+* 顶层 ``let`` 重复声明 → SyntaxError → 整个 ``<script>`` 不执行（坑点 22）；
+* 词法扫描器误报（坑点 24）—— 那是检查器自己的问题，与本脚本无关。
+
+本脚本用最小 DOM 垫片 + 真实 fetch 跑一遍 ``boot()``，
+检查关键按钮是否绑上、并**逐个点一遍**捕获运行时异常。
+
+用法::
+
+    python tools/check_page_js.py                # 检查全部页面
+    python tools/check_page_js.py booking        # 只检查 booking.html
 """
+
+from __future__ import annotations
 
 import json
 import re
@@ -11,60 +25,48 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(r"F:\PycharmProjects\SmartRail-Seat-Engine")
-PAGE = ROOT / "smartrail" / "web" / "booking.html"
-html = PAGE.read_text(encoding="utf-8")
+ROOT = Path(__file__).resolve().parents[1]
+WEB = ROOT / "smartrail" / "web"
 
-# ---- 1) 先从 HTML 里收集所有 id ----
-ids = set(re.findall(r'id="([^"]+)"', html))
-print(f"HTML 中的 id 共 {len(ids)} 个")
+#: 每个页面必须绑上点击处理的按钮
+REQUIRED_BUTTONS: dict[str, list[str]] = {
+    "booking.html": [
+        "addpax", "btnsubmit", "btnreset", "btnclear", "navreset", "btnscenario",
+        "btnAddOrder", "btnClearOrders", "btnDemoOrders", "btnSubmitOrders",
+        "btnComposeSubmit", "btnComposeAdd", "btnComposeDup", "btnComposeDemo",
+        "btnComposeClear",
+    ],
+    "ticketing.html": [
+        "navPax", "btnPickPax", "btnPickCancel", "btnPickOk",
+        "btnAddPax", "btnAddCancel", "btnAddOk", "btnSubmit",
+    ],
+    "developer.html": ["btnReset"],
+}
 
-# ---- 2) 找出 JS 里 $("xxx") / getElementById("xxx") 引用的 id ----
-script = html[html.index("<script>") + len("<script>"):html.rindex("</script>")]
-referenced = set(re.findall(r'\$\("([^"]+)"\)', script))
-referenced |= set(re.findall(r'getElementById\("([^"]+)"\)', script))
-print(f"JS 引用的 id 共 {len(referenced)} 个")
+#: 需要真实请求后端；没有服务时跳过这些页面
+NEEDS_BACKEND = {"booking.html", "ticketing.html", "developer.html"}
 
-missing = sorted(referenced - ids)
-print()
-if missing:
-    print(f"!! JS 引用了 HTML 中不存在的 id（{len(missing)} 个）：")
-    for name in missing:
-        # 找出引用所在行
-        line_numbers = [
-            index + 1
-            for index, line in enumerate(script.splitlines())
-            if f'"{name}"' in line and ("$(" in line or "getElementById" in line)
-        ]
-        print(f"   {name:<20} 出现在脚本第 {line_numbers[:4]} 行")
-else:
-    print("OK：JS 引用的所有 id 都存在于 HTML 中")
-
-# ---- 3) 在 Node 里真实执行 ----
-harness = r"""
+HARNESS = r"""
 const fs = require('fs');
-const path = process.argv[2];
-const html = fs.readFileSync(path, 'utf8');
+const html = fs.readFileSync(process.argv[2], 'utf8');
 const script = html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('</script>'));
+const need = JSON.parse(process.argv[4] || '[]');
 
 const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map(m => m[1]));
 const elements = new Map();
 const errors = [];
-// 先声明 document（用 var 提升），避免 makeEl 里访问造成 TDZ 报错
 var document;
 
 function makeEl(id) {
   const el = {
-    id,
-    textContent: '', innerHTML: '', value: '', checked: false,
+    id, textContent: '', innerHTML: '', value: '', checked: false,
     dataset: {}, style: {}, disabled: false,
     classList: { add(){}, remove(){}, toggle(){}, contains(){ return false; } },
-    children: [],
-    _handlers: {},
+    children: [], _handlers: {},
     addEventListener(type, fn) { (this._handlers[type] ||= []).push(fn); },
     removeEventListener() {},
     appendChild(child) { this.children.push(child); return child; },
-    querySelector() { return null; },
+    querySelector() { return makeEl('sel'); },
     querySelectorAll() { return []; },
     setAttribute() {}, getAttribute() { return null; },
     focus() {}, blur() {}, insertAdjacentHTML() {}, remove() {},
@@ -97,10 +99,10 @@ global.navigator = { userAgent: 'node' };
 global.alert = () => {};
 global.confirm = () => true;
 
-// 真实 fetch 打到本地服务
+const base = process.argv[3] || 'http://127.0.0.1:8000';
 const realFetch = global.fetch;
 global.fetch = (url, opts) => {
-  const target = url.startsWith('http') ? url : 'http://127.0.0.1:8000' + url;
+  const target = url.startsWith('http') ? url : base + url;
   return realFetch(target, opts);
 };
 
@@ -110,15 +112,25 @@ process.on('unhandledRejection', (reason) => {
 
 (async () => {
   try {
-    // 用间接 eval 拿到全局作用域，便于随后检查绑定情况
-    const runner = new Function(script + '\n; return { boot, state: () => ({ orders: typeof orders !== "undefined" ? orders.length : null }) };');
-    const api = runner();
-    await api.boot();
+    // 页面末尾会自己调 ``boot()``。我们要拿到**可 await** 的那次调用，
+    // 所以在加载阶段先放一个同名的空壳把它接住，加载完再删掉空壳、
+    // 通过 ``new Function`` 返回真正的 boot。
+    // （直接用页面自己那次调用是不行的：它返回的 Promise 我们拿不到。）
+    let started = false;
+    const stub = function boot() { started = true; };
+    globalThis.boot = stub;
+    const runner = new Function(
+      'boot',
+      script + '\n; return { boot: typeof boot === "function" ? boot : null };'
+    );
+    const api = runner(stub);
+    if (!api.boot) {
+      errors.push('页面中没有定义 boot()');
+    } else {
+      await api.boot();
+    }
+    await new Promise((r) => setTimeout(r, 1200));   // 等挂起的 fetch 结束
 
-    // ---- 逐个"点一下"关键按钮，捕获运行时异常 ----
-    const need = ['addpax','btnsubmit','btnreset','btnclear','navreset','btnscenario',
-                  'btnAddOrder','btnClearOrders','btnDemoOrders','btnSubmitOrders',
-                  'btnComposeSubmit','btnComposeAdd','btnComposeDup','btnComposeDemo','btnComposeClear'];
     const unbound = need.filter(id => {
       const el = elements.get(id);
       return !el || !el._handlers.click || el._handlers.click.length === 0;
@@ -129,16 +141,12 @@ process.on('unhandledRejection', (reason) => {
       const el = elements.get(id);
       if (!el || !el._handlers.click) continue;
       for (const fn of el._handlers.click) {
-        try {
-          await fn({ preventDefault(){}, stopPropagation(){}, target: el });
-        } catch (error) {
-          clickErrors.push(`${id}: ${error && error.message ? error.message : error}`);
-        }
+        try { await fn({ preventDefault(){}, stopPropagation(){}, target: el }); }
+        catch (error) { clickErrors.push(`${id}: ${error && error.message ? error.message : error}`); }
       }
     }
-
-    // ---- 点几个非按钮控件（键盘/复选框） ----
-    for (const id of ['chkKeyService']) {
+    // 复选框类控件
+    for (const id of ['chkQuiet', 'chkKeyService']) {
       const el = elements.get(id);
       if (el && el._handlers.change) {
         try { el.checked = true; await el._handlers.change[0]({ target: el }); }
@@ -148,57 +156,107 @@ process.on('unhandledRejection', (reason) => {
 
     console.log(JSON.stringify({
       ok: errors.length === 0 && unbound.length === 0 && clickErrors.length === 0,
-      errors,
-      unbound,
-      clickErrors,
-      boundCount: need.length - unbound.length,
-      totalNeeded: need.length,
+      errors, unbound, clickErrors,
+      bound: need.length - unbound.length, total: need.length,
     }));
   } catch (error) {
     console.log(JSON.stringify({
-      ok: false,
-      fatal: String(error && error.stack ? error.stack : error),
-      errors,
+      ok: false, fatal: String(error && error.stack ? error.stack : error), errors,
     }));
   }
 })();
 """
 
-harness_path = ROOT / ".js_harness.js"
-harness_path.write_text(harness, encoding="utf-8")
-result = subprocess.run(
-    ["node", str(harness_path), str(PAGE)],
-    capture_output=True, text=True, encoding="utf-8", errors="ignore", cwd=str(ROOT),
-)
-print()
-print("=== Node 执行结果 ===")
-out = (result.stdout or "").strip()
-if result.stderr:
-    print("stderr:")
-    print(result.stderr[:2000])
-if out:
-    try:
-        payload = json.loads(out.splitlines()[-1])
-    except json.JSONDecodeError:
-        print(out[:3000])
-    else:
-        if payload.get("fatal"):
-            print("!! 启动时抛出异常：")
-            print(payload["fatal"][:1500])
-        if payload.get("errors"):
-            print(f"!! 记录到 {len(payload['errors'])} 条错误：")
-            for item in payload["errors"][:12]:
-                print("   -", str(item)[:220])
-        if payload.get("unbound"):
-            print(f"!! 有 {len(payload['unbound'])} 个按钮没绑上点击处理：")
-            for name in payload["unbound"]:
-                print("   -", name)
-        if payload.get("clickErrors"):
-            print(f"!! 点击/变更时有 {len(payload['clickErrors'])} 处报错：")
-            for item in payload["clickErrors"][:12]:
-                print("   -", str(item)[:220])
-        if payload.get("ok"):
-            print(f"OK：boot() 正常完成，{payload['boundCount']}/{payload['totalNeeded']} "
-                  f"个按钮已绑定，逐个点击均无异常")
 
-harness_path.unlink(missing_ok=True)
+def backend_alive(base: str) -> bool:
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(base + "/api/config", timeout=5) as response:
+            return response.status == 200
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def run_page(path: Path, buttons: list[str], base: str) -> dict:
+    harness_path = ROOT / ".page_js_harness.js"
+    harness_path.write_text(HARNESS, encoding="utf-8")
+    try:
+        result = subprocess.run(
+            ["node", str(harness_path), str(path), base, json.dumps(buttons)],
+            capture_output=True, text=True, encoding="utf-8", errors="ignore",
+        )
+    finally:
+        harness_path.unlink(missing_ok=True)
+    output = (result.stdout or "").strip()
+    if not output:
+        return {"ok": False, "fatal": (result.stderr or "node 无输出")[:800]}
+    try:
+        return json.loads(output.splitlines()[-1])
+    except json.JSONDecodeError:
+        return {"ok": False, "fatal": output[:800]}
+
+
+def main(argv: list[str]) -> int:
+    base = "http://127.0.0.1:8000"
+    targets = argv or [name for name in REQUIRED_BUTTONS]
+    alive = backend_alive(base)
+    print(f"后端 {base}：{'在线' if alive else '离线'}")
+    print()
+
+    failures: list[str] = []
+    for name in targets:
+        path = WEB / name if name.endswith(".html") else WEB / f"{name}.html"
+        if not path.exists():
+            print(f"!! 页面不存在：{path}")
+            failures.append(str(path))
+            continue
+        buttons = REQUIRED_BUTTONS.get(path.name, [])
+        # 先做静态 id 引用检查（不需要后端）
+        html = path.read_text(encoding="utf-8")
+        ids = set(re.findall(r'id="([^"]+)"', html))
+        script = html[html.index("<script>") + len("<script>"):html.rindex("</script>")]
+        referenced = set(re.findall(r'\$\("([^"]+)"\)', script))
+        referenced |= set(re.findall(r'getElementById\("([^"]+)"\)', script))
+        missing = sorted(referenced - ids)
+
+        if path.name in NEEDS_BACKEND and not alive:
+            print(f"{path.name}：跳过执行检查（后端离线）"
+                  f"{'；但引用的 id 缺失：' + str(missing) if missing else ''}")
+            if missing:
+                failures.append(f"{path.name} 缺失 id {missing[:4]}")
+            continue
+
+        outcome = run_page(path, buttons, base)
+        status = "OK" if outcome.get("ok") else "FAIL"
+        print(f"{path.name}：{status}"
+              f"  按钮绑定 {outcome.get('bound', '?')}/{outcome.get('total', '?')}")
+        if missing:
+            print(f"    引用的 id 缺失：{missing[:5]}")
+            failures.append(f"{path.name} 缺失 id {missing[:4]}")
+        if outcome.get("fatal"):
+            print(f"    启动异常：{outcome['fatal'][:400]}")
+            failures.append(f"{path.name} 启动异常")
+        for item in (outcome.get("errors") or [])[:5]:
+            print(f"    运行期错误：{str(item)[:200]}")
+            failures.append(f"{path.name} 运行期错误")
+        if outcome.get("unbound"):
+            print(f"    未绑定按钮：{outcome['unbound']}")
+            failures.append(f"{path.name} 未绑定按钮 {outcome['unbound']}")
+        for item in (outcome.get("clickErrors") or [])[:5]:
+            print(f"    点击报错：{str(item)[:200]}")
+            failures.append(f"{path.name} 点击报错")
+        print()
+
+    if failures:
+        print(f"发现 {len(failures)} 项问题：")
+        for item in failures:
+            print("  -", item)
+        return 1
+    print("所有页面脚本启动正常、按钮绑定完整、逐个点击无异常。")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

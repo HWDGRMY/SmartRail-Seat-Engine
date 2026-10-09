@@ -33,7 +33,7 @@ from urllib.parse import urlparse
 
 from ..credit import CreditLedger
 from ..engine import SeatEngine
-from . import service
+from . import service, ticketing_routes
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "web"
 MAX_BODY_BYTES = 1 << 20  # 1 MiB，防止超大请求体打满内存
@@ -109,6 +109,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_page("acceptance.html")
             elif path == "/ticket-first":
                 self._send_page("ticket-first.html")
+            elif path in ticketing_routes.TICKETING_PAGES:
+                self._send_page(ticketing_routes.TICKETING_PAGES[path])
+            elif path in ticketing_routes.GET_ROUTES:
+                self._send_json(200, ticketing_routes.GET_ROUTES[path]({})[1])
             elif path == "/api/snapshot":
                 with STATE.lock:
                     self._send_json(200, STATE.engine.snapshot())
@@ -159,6 +163,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/orders/types": self._order_types,
             "/api/composition/check": self._check_composition,
             "/api/composition/submit": self._submit_compositions,
+            **ticketing_routes.POST_ROUTES,
         }
         handler = handlers.get(path)
         if handler is None:
