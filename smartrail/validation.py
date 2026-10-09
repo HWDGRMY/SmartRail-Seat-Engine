@@ -67,7 +67,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as _dataclass_fields
 from typing import Any, Iterable, Mapping, Sequence
 
 from .models import (
@@ -162,6 +162,15 @@ INVARIANTS: tuple[Invariant, ...] = (
     Invariant("K4", "CONSISTENCY", "不得声称最优却什么都没做",
               "订单非空、车上有空座，却分配 0 人并声称 OPTIMAL/UNKNOWN，"
               "属于把『不可行』误报成『最优』。"),
+    # ---- 代价分层（配置级，不是单次求解） ----
+    Invariant("M1", "CONSISTENCY", "软偏好之和不得盖过硬约束",
+              "Σ(软偏好上限) × 最大单量人数 必须小于最小 Tier 0 惩罚。"
+              "否则硬约束只是「罚得很重」，而不是真的硬。"),
+    Invariant("M2", "CONSISTENCY", "配置必须声明 Tier 0 惩罚",
+              "分层关系无从核验时不能静默通过。"),
+    Invariant("M3", "CONSISTENCY", "坐人奖励必须落在软偏好与硬约束之间",
+              "下限：大于单人软偏好上限（否则『少坐一人换高亲和度』会被选中）；"
+              "上限：小于 Tier 0 惩罚（否则宁可违反硬约束也要多坐人）。"),
 )
 
 INVARIANT_BY_CODE: dict[str, Invariant] = {item.code: item for item in INVARIANTS}
@@ -570,6 +579,86 @@ def _bond_of(order: Any, a: str, b: str) -> BondType:
     if callable(fn):
         return fn(a, b)
     return BondType.SOFT
+
+
+def check_cost_magnitudes(config: Any | None = None) -> InvariantReport:
+    """核验**代价分层**的量级关系：硬约束必须压得住所有软偏好。
+
+    这是本项目最容易反复踩的一类结构性问题：把"必须满足"的约束写成罚分，
+    然后靠"罚分足够大"来保证它不被违反。只要有人调整某个奖励的量级，
+    整个分层就可能悄悄失效 —— 而**结果看起来完全正常**
+    （求解器仍然返回一个解、仍然报 OPTIMAL），只有出票结果不合理。
+
+    真实事故（就在写这套规范时发生）：为修"空车全员候补"（C1），
+    V2 的"多坐一人"奖励被设成 ``200_000`` —— 比一条 Tier 0（100000）
+    还大 2 倍，等于告诉求解器"多坐 1 个人比避免 1 条硬约束违规更值"。
+    V1 原本靠"软奖励 60/人 × 人数 < 100000"维持的分层，被这一个数字破坏。
+
+    这里把关系写成可机检的条款：
+
+        Σ(软偏好上限) × 最大单量人数  <  最小硬约束惩罚
+
+    并用**当前配置的真实数值**去算，而不是引用文档里的承诺。
+    """
+    from .config import DEFAULT_CONFIG
+
+    cfg = config if config is not None else DEFAULT_CONFIG
+    report = InvariantReport(solver="cost-config", order_id="(配置)")
+
+    # 软偏好：奖励类项（b5_* / t5_*），取正值部分
+    soft_values = []
+    hard_penalties = []
+    for field in _dataclass_fields(cfg):
+        name = field.name
+        value = getattr(cfg, name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if name.startswith(("b5_", "t5_")) and value > 0:
+            soft_values.append((name, float(value)))
+        if name.startswith("t0_") and value < 0:
+            hard_penalties.append((name, float(value)))
+
+    if not hard_penalties:
+        _breach(report, "M2", "配置里找不到任何 Tier 0 惩罚（t0_*）")
+        return report
+
+    soft_total = sum(value for _n, value in soft_values)
+    # 单笔订单的最大规模：超过这个人数走"自适应预算"直接用贪心解，
+    # 精确求解不参与，故取 ``max_exact_order_size`` 作为上界。
+    max_people = int(getattr(cfg, "max_exact_order_size", 8))
+    hard_min = min(abs(value) for _n, value in hard_penalties)
+
+    if soft_total * max_people >= hard_min:
+        _breach(report, "M1",
+                f"软偏好合计 {soft_total:.0f}/人 × {max_people} 人 = "
+                f"{soft_total * max_people:.0f} ≥ 最小 Tier 0 惩罚 {hard_min:.0f} —— "
+                f"硬约束可能被软奖励盖过",
+                {"soft_per_person": soft_total,
+                 "max_people": max_people,
+                 "soft_total": soft_total * max_people,
+                 "hard_min": hard_min})
+
+    # "多坐一个人"的奖励（V2 专有）也必须落在同一区间
+    try:
+        from .v2.cpsat import SEAT_ONE_PASSENGER
+
+        if SEAT_ONE_PASSENGER >= hard_min:
+            _breach(report, "M3",
+                    f"V2 的『多坐一人』奖励 {SEAT_ONE_PASSENGER} ≥ "
+                    f"最小 Tier 0 惩罚 {hard_min:.0f} —— "
+                    f"求解器会宁可违反硬约束也要多坐人",
+                    {"seat_bonus": SEAT_ONE_PASSENGER, "hard_min": hard_min})
+        if SEAT_ONE_PASSENGER <= soft_total:
+            _breach(report, "M3",
+                    f"V2 的『多坐一人』奖励 {SEAT_ONE_PASSENGER} ≤ "
+                    f"单人软偏好上限 {soft_total:.0f} —— "
+                    f"『少坐一人换更高亲和度』会被选中",
+                    {"seat_bonus": SEAT_ONE_PASSENGER, "soft_per_person": soft_total})
+    except Exception:  # noqa: BLE001 - ortools 未装时跳过这一段
+        pass
+
+    report.passengers = len(soft_values)
+    return report
 
 
 def invariant_catalog() -> list[dict[str, str]]:

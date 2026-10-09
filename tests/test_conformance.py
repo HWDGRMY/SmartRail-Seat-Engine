@@ -273,6 +273,43 @@ def test_class_code_is_enforced_in_both_versions() -> None:
               f"V2 下单 {class_code} -> 实际 {sorted(v2_classes)}")
 
 
+def test_cost_tiers_cannot_be_overturned() -> None:
+    """代价分层必须**结构性地**保证硬约束压得住软偏好。
+
+    这是本项目最容易反复踩的一类结构性问题：把"必须满足"的约束写成罚分，
+    再靠"罚分足够大"保证它不被违反。只要有人调整某个奖励的量级，
+    分层就可能悄悄失效 —— 而**结果看起来完全正常**
+    （求解器仍然返回解、仍然报 OPTIMAL），只有出票结果不合理。
+
+    真实事故（就在建立这套规范时发生）：为修"空车全员候补"（C1），
+    V2 的"多坐一人"奖励一度被设成 ``200_000``，**比一条 Tier 0
+    （100000）还大 2 倍** —— 等于告诉求解器"多坐 1 个人比避免 1 条
+    硬约束违规更值"。规范条款 M1/M3 就是为这件事立的。
+    """
+    print("[规范] 代价分层不得被掀翻")
+    from smartrail.validation import check_cost_magnitudes
+
+    report = check_cost_magnitudes()
+    check(report.ok, f"分层关系成立：{report.explain()[:150]}")
+
+    # 反向验证：把坐人奖励改回错误量级，条款必须报警
+    try:
+        from smartrail import v2  # noqa: F401
+        from smartrail.v2 import cpsat as cpsat_module
+    except Exception:  # noqa: BLE001 - 没装 ortools 时跳过
+        print("  SKIP  未安装 ortools，跳过反向验证")
+        return
+
+    original = cpsat_module.SEAT_ONE_PASSENGER
+    try:
+        cpsat_module.SEAT_ONE_PASSENGER = 200_000
+        broken = check_cost_magnitudes()
+        check(not broken.ok and "M3" in broken.codes(),
+              f"坐人奖励超过 Tier 0 时被条款 M3 抓到（{broken.codes()}）")
+    finally:
+        cpsat_module.SEAT_ONE_PASSENGER = original
+
+
 def main() -> int:
     tests = [
         test_catalog_is_wellformed,
@@ -280,6 +317,7 @@ def main() -> int:
         test_spec_catches_tampered_solutions,
         test_v2_never_returns_pathological_result,
         test_class_code_is_enforced_in_both_versions,
+        test_cost_tiers_cannot_be_overturned,
     ]
     if UNDER_PYTEST:
         for test in tests:
