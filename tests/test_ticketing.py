@@ -324,13 +324,29 @@ def test_dev_snapshot_covers_whole_train() -> None:
     accessible = [s for s in snapshot["seats"] if s["accessible"]]
     check(len(accessible) >= 6, f"无障碍座位 {len(accessible)} 个")
 
-    # 逐节车厢的定员与余票必须与车型图对得上
+    # 逐节车厢的定员与**构成**必须与车型图对得上。
+    # 混合车厢（01车=一等32+商务5、08车=二等43+商务6）只显示"主席别 + 总定员"
+    # 是看不出构成的，而需求给的车型图正是用 "32/5" 这种写法标注的。
     by_carriage = {c["number"]: c for c in snapshot["carriages"]}
     check(by_carriage[2]["total"] == 93, f"02 车定员 {by_carriage[2]['total']}")
     check(by_carriage[4]["total"] == 78, f"04 车定员 {by_carriage[4]['total']}")
     check(by_carriage[8]["total"] == 49, f"08 车定员 {by_carriage[8]['total']}")
     check(by_carriage[4]["accessible"] and by_carriage[12]["accessible"],
           "04/12 车标为无障碍车厢")
+    expected_summary = {
+        1: "一等座32+商务座5", 2: "二等座93", 3: "二等座93", 4: "二等座78",
+        5: "二等座83", 6: "二等座93", 7: "二等座93", 8: "二等座43+商务座6",
+        9: "一等座32+商务座5", 10: "二等座93", 11: "二等座93", 12: "二等座78",
+        13: "二等座83", 14: "二等座93", 15: "二等座93", 16: "二等座43+商务座6",
+    }
+    mismatch = {
+        number: (want, by_carriage[number].get("class_summary"))
+        for number, want in expected_summary.items()
+        if by_carriage[number].get("class_summary") != want
+    }
+    check(not mismatch, f"16 节车厢构成与车型图一致（不符：{mismatch or '无'}）")
+    check(by_carriage[1].get("class_totals") == {"一等座": 32, "商务座": 5},
+          f"01 车逐席别计数 {by_carriage[1].get('class_totals')}")
 
 
 def test_reset_clears_everything() -> None:

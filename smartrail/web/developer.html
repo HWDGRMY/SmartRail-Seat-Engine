@@ -267,7 +267,8 @@ function renderCarriages() {
     return `<div class="car">
       <div class="car-head">
         <b>${String(car.number).padStart(2, "0")}车</b>
-        <span class="hint">${esc(car.class_code)} · ${car.rows} 排 · ${columns.join("")}</span>
+        <span class="hint">${esc(car.class_summary || car.class_code)}
+          · ${car.rows} 排 · ${columns.join("")}</span>
         ${printed.join("")}
         <span class="hint" style="margin-left:auto">
           定员 ${car.total} ／ 余 ${car.remaining}</span>

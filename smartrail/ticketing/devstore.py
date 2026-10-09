@@ -241,8 +241,21 @@ class DevStore:
                 "passenger_name": record.passenger_name if record else "",
                 "color_index": record.color_index if record else 0,
             })
-        carriages = [
-            {
+        carriages = []
+        for carriage in self.formation.carriages:
+            rows = [s for s in self.formation.seats if s.carriage == carriage.number]
+            # 逐席别计数：混合车厢（01车=一等32+商务5、08车=二等43+商务6）
+            # 只显示"主席别 + 总定员"是看不出构成的，需求给的车型图正是
+            # 用 "32/5" 这种写法标注的。
+            class_totals: dict[str, int] = {}
+            class_remaining: dict[str, int] = {}
+            for seat in rows:
+                class_totals[seat.class_code] = class_totals.get(seat.class_code, 0) + 1
+                if seat.seat_id not in self.occupied:
+                    class_remaining[seat.class_code] = (
+                        class_remaining.get(seat.class_code, 0) + 1
+                    )
+            carriages.append({
                 "number": carriage.number,
                 "class_code": carriage.class_code,
                 "columns": list(carriage.columns),
@@ -250,17 +263,17 @@ class DevStore:
                 "quiet": carriage.is_quiet_carriage,
                 "accessible": carriage.has_accessible_zone,
                 "toilet": carriage.has_toilet,
-                "total": sum(
-                    1 for s in self.formation.seats if s.carriage == carriage.number
-                ),
+                "total": len(rows),
                 "remaining": sum(
-                    1 for s in self.formation.seats
-                    if s.carriage == carriage.number
-                    and s.seat_id not in self.occupied
+                    1 for s in rows if s.seat_id not in self.occupied
                 ),
-            }
-            for carriage in self.formation.carriages
-        ]
+                "class_totals": class_totals,
+                "class_remaining": class_remaining,
+                # 车型图的写法："一等座32+商务座5"
+                "class_summary": "+".join(
+                    f"{name}{count}" for name, count in class_totals.items()
+                ),
+            })
         return {
             "train_code": self.formation.train_code,
             "total_seats": len(self.formation.seats),
