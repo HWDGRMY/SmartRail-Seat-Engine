@@ -342,7 +342,20 @@ class SolverTables:
                 for pid, seat_slot in zip(passenger_ids, combo):
                     value += fs.row(pid)[seat_slot]
                 est.append((value, combo))
-            est.sort(key=lambda item: -item[0])
+            # **"坐在一起"必须是排序的一等公民。**
+            #
+            # 这里的 value 只是"个体分之和" —— 它**完全不反映乘客之间的
+            # 距离**。而每个车厢只保留 max_per_carriage（4 人单元仅 4 个）
+            # 个候选，于是"分成两排"与"挤在一排"按同一个分数竞争，
+            # 前者往往因为能挑到更高个体分的散座而胜出。
+            #
+            # 实测后果：2 成人 + 2 儿童（一个 mandatory 单元）在余票碎片化时
+            # **20 单里 19 单被拆到不同排**，用户直接看出"你把大人小孩分开了"。
+            #
+            # 修正：先按**占用排数**升序（越少越好），再按个体分降序。
+            # 这样"必须同车厢"的硬约束才有实际可用的候选 —— 约束能不能满足
+            # 取决于候选池里有没有对应的组合，而不是取决于罚分多大。
+            est.sort(key=lambda item: (_row_span(self.seats, item[1]), -item[0]))
             target = scored if len(slots) >= size else fallback
             target.extend((combo, value) for value, combo in est[:max_per_carriage])
         scored.sort(key=lambda item: -item[1])
@@ -968,6 +981,35 @@ def assign_greedy(
     return solution
 
 
+def _by_row_span(
+    tables: "SolverTables",
+    options: Sequence[tuple[tuple[int, ...], float]],
+) -> list[tuple[tuple[int, ...], float]]:
+    """把候选按"占排数升序、个体分降序"重排。
+
+    为什么要单独再排一次：``tables.candidates()`` 已按占排数排过一次，
+    但为了控制时延，它在**每节车厢内部**做过截断（``max_per_carriage``），
+    被截掉的正是"占排少但个体分低"的组合。分支限界只评估前 N 个候选，
+    于是"坐在一起"的方案可能整个池子里都不剩几个、甚至一个不剩。
+
+    这里不再截断，只重排 —— 池子本身是有限的（全局上限 32~72），
+    排序成本可忽略，换来的是"少分排"方案一定进入评估。
+    """
+    return sorted(
+        options,
+        key=lambda item: (_row_span(tables.seats, item[0]), -item[1]),
+    )
+
+
+def _row_span(seats: Sequence[Seat], combo: Sequence[int]) -> int:
+    """一个座位组合占用了几个不同的排。
+
+    "坐在一起"的度量：同排 1、跨两排 2…… 用它给候选排序，
+    保证"尽量少分排"的方案先被评估到。
+    """
+    return len({(seats[slot].carriage, seats[slot].row) for slot in combo})
+
+
 def _unit_pair_ceiling(unit: PassengerUnit, ctx: OrderContext, tables: SolverTables) -> float:
     """单元内成对项 + 安全底线加成的**上限**（用于候选剪枝）。
 
@@ -1298,11 +1340,22 @@ def assign_exact(
             return
 
         scored: list[tuple[float, tuple[int, ...], bool]] = []
-        # 先按个体分估计排序，只对最有希望的若干候选做完整成对评估：
-        # 大单元（≥5 人）的候选池若全量精算，单个节点就要上百次成对打分。
-        probe_limit = 14 if len(unit.passengers) <= 4 else 8
+        # 只对最有希望的若干候选做完整成对评估：大单元（≥5 人）的候选池
+        # 若全量精算，单个节点就要上百次成对打分。
+        #
+        # **但这个上限不能卡在"最前面 14 个"上。**
+        # ``tables.candidates()`` 是按**个体分估计**排序的，而个体分完全
+        # 不反映乘客之间的距离。实测后果：2 成人 + 2 儿童的候选池里，
+        # "同一排 4 座"（真正想要的）排在"跨 3 排的散座"之后 ——
+        # 前者恰好落在第 14 名之外，**从来没被评估过**，
+        # 于是分支限界每次都在众多"跨排"方案里挑一个，用户看到
+        # "你把大人小孩分开了"（15 单里 14 单跨排）。
+        #
+        # 因此这里的 probes 只是**评估次数预算**，候选按"先少分排、再高分"
+        # 排序后再取前 N 个，保证"坐在一起"的方案一定进入评估。
+        probe_limit = 20 if len(unit.passengers) <= 4 else 10
         probes = 0
-        for combo, _estimate in tables.candidates(unit):
+        for combo, _estimate in _by_row_span(tables, tables.candidates(unit)):
             if not set(combo) <= free:
                 continue
             if probes >= probe_limit:

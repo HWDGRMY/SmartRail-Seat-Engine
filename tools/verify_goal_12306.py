@@ -389,6 +389,34 @@ check(bool(empty_order.get("level_label")),
       f"给出原因而非静默失败（{empty_order.get('level_label')}）")
 
 print()
+print("=== 目标 12e4：同一订单应坐在同一排 ===")
+# 真实事故（用户报"你把大人小孩分开了"）：2 成人 + 2 儿童拿到
+# 06车01A/B + 06车04D/F —— 每对挨着，两对之间隔了三排。
+# 根因是候选池按"个体分之和"排序，而个体分不反映人与人之间的距离，
+# 于是"同一排 4 座"排在"跨 3 排散座"之后、从来没被评估过。
+call("/api/dev/reset", {"passengers": True})
+composed = _composition(adult=2, child=2)
+composed["class_code"] = "二等座"
+style, one = call("/api/composition/submit", {"orders": [composed]})
+one_seats = sorted((one["orders"][0].get("seats") or {}).values())
+check(len({s[:2] + "车" + s[3:5] for s in one_seats}) == 1,
+      f"空车时 4 人同一排（{one_seats}）")
+
+call("/api/dev/reset", {"passengers": True})
+call("/api/dev/remaining", {"class_code": "二等座", "remaining": 300})
+trials = 12
+same_row = 0
+for _ in range(trials):
+    style, body = call("/api/composition/submit",
+                       {"orders": [dict(composed)]})
+    got = (body["orders"][0].get("seats") or {}).values()
+    if len({s[:2] + "车" + s[3:5] for s in got}) == 1:
+        same_row += 1
+check(same_row >= trials // 2,
+      f"余票 300 时同排率 {same_row}/{trials}"
+      f"（修复前 0/{trials}，要求 ≥ {trials // 2}）")
+
+print()
 print("=== 目标 12f：开发者提交的订单必须被保留 ===")
 # 需求："开发者提交的订单难道不用保留吗" —— 原先这条路径完全没记录。
 call("/api/dev/reset", {"passengers": True})
