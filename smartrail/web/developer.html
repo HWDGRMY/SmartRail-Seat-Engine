@@ -36,9 +36,9 @@
   .btn.danger:hover{background:#cf443e}
   .btn.small{padding:4px 10px;font-size:12px}
   .hint{color:var(--muted);font-size:12.5px}
-  .grid2{display:grid;grid-template-columns:minmax(0,1fr) 440px;gap:14px;
-    align-items:start}
-  @media (max-width:1400px){.grid2{grid-template-columns:1fr}}
+  /* 布局：座位图占满整宽，操作面板横向铺开在下方。
+     早期是 grid2 = 左列座位图 + 440px 侧栏，结果座位图只有 1080px 宽、
+     一节车厢只占 300px，右边近 900px 是空白（"草稿纸"）。 */
   .metrics{display:flex;flex-wrap:wrap;gap:22px}
   .metric .k{font-size:11.5px;color:var(--muted)}
   .metric .v{font-size:21px;font-weight:700;font-variant-numeric:tabular-nums}
@@ -54,12 +54,33 @@
     font-weight:600;font-size:13.5px}
   .slider .total{width:64px;color:var(--muted);font-size:11.5px}
   /* ---- 座位图 ---- */
-  .car{border:1px solid var(--line);border-radius:8px;margin-bottom:11px;overflow:hidden}
-  .car-head{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#fbfcfd;
-    border-bottom:1px solid var(--line);font-size:13px;flex-wrap:wrap}
-  .car-head b{font-size:14px}
-  .car-body{padding:10px 12px;overflow:auto}
-  .seatgrid{display:inline-block;min-width:100%}
+  .car{border:1px solid var(--line);border-radius:8px;margin-bottom:0;overflow:hidden}
+  /* 车厢头一行放得下：名称 + 车型/排数 + 标签 + 右侧余票。
+     卡片被网格拉到列宽（实测 289px），所以中间那段必须能收缩，
+     否则会压到右边的"定员／余"上（第一版就重叠了）。 */
+  .car-head{display:flex;align-items:center;gap:8px;padding:7px 12px;
+    background:#fbfcfd;border-bottom:1px solid var(--line);font-size:12.5px;
+    white-space:nowrap}
+  .car-head b{font-size:13.5px;flex:0 0 auto}
+  .car-head .carspec{flex:1 1 auto;min-width:0;overflow:hidden;
+    text-overflow:ellipsis;color:var(--muted);font-size:11px}
+  .car-head .cartags{display:flex;gap:5px;flex:0 0 auto}
+  .car-head .carleft{flex:0 0 auto;color:var(--muted);font-size:11px;
+    font-variant-numeric:tabular-nums}
+  .car-head .tag{font-size:10px;padding:1px 6px}
+  .car-body{padding:10px 12px;overflow-x:auto}
+  /* 一节车厢的**座位网格只有 159px 宽**（5 列 × 25px + 排号 26px），
+     整个内容区却有 1520px。原先竖排 16 节，每节右边留 1300px 空白、
+     还要滚很久才能看完 —— 像草稿纸。
+
+     实测：minmax(250px,1fr) 在 1520px 下一行放 6 节，
+     16 节共 3 行，一屏看完。 */
+  #carriages{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));
+    gap:11px;align-items:start}
+  /* .seatgrid 用 max-content 宽：车厢卡片本身被网格拉宽到列宽，
+     但座位网格**只占自己需要的 159px**，不会把 5 个座位摊开到整列 ——
+     否则车厢内部又会留下空白。 */
+  .seatgrid{display:inline-block;width:max-content}
   .srow{display:flex;align-items:center;gap:2px;margin-bottom:2px}
   .rno{width:26px;font-size:10.5px;color:var(--muted);text-align:right;
     flex:0 0 auto;font-variant-numeric:tabular-nums}
@@ -117,6 +138,13 @@
     margin-bottom:5px;display:flex;gap:8px;align-items:baseline}
   /* 特殊人群每行：名称 + 说明一行，年龄段换到第二行，不再挤成一列 */
   .stepper.wide{grid-template-columns:1fr;gap:4px}
+  /* 操作面板横向铺开（原先挤在 440px 侧栏里，把座位图压到 1080px），
+     座位图因此能占满整宽、并排 4 节车厢。 */
+  .opgrid{display:grid;gap:14px;align-items:start;
+    grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
+  .opgrid > .card{margin-bottom:0}
+  .opgrid .card.wide2{grid-column:span 2}
+  @media (max-width:900px){.opgrid .card.wide2{grid-column:span 1}}
   /* 提交结果里的乘客行 */
   .paxrow{display:flex;align-items:center;gap:8px;font-size:12.5px;
     padding:3px 0;border-bottom:1px dashed var(--line)}
@@ -153,28 +181,29 @@
     </div>
   </div>
 
-  <div class="grid2">
-    <div>
-      <!-- 全局座位图 -->
-      <div class="card">
-        <h2>全局座位图 <span class="hint">16 节编组 · 点击座位可手动锁定/解锁</span></h2>
-        <div class="body">
-          <div class="legend" style="margin-bottom:10px">
-            <span><i style="background:#fff"></i>可选</span>
-            <span><i style="background:#9fb2c6"></i>用户已售</span>
-            <span><i style="background:#d9c7a8"></i>手动锁定</span>
-            <span><i style="background:#c9d4e0"></i>预设占用</span>
-            <span><i style="border:2px solid var(--quiet)"></i>静音车厢</span>
-            <span><i style="background:#e6f7f7;border-color:var(--access)"></i>近轮椅位</span>
-          </div>
-          <div class="hint" id="baySummary" style="margin-bottom:6px"></div>
-          <div id="bayList" style="margin-bottom:10px"></div>
-          <div id="carriages"><div class="hint">加载中…</div></div>
-        </div>
+  <!-- 全局座位图：**占满整宽**。
+       原先它被塞在 grid2 的左列（1080px），而一节车厢的座位只占约 300px，
+       右边近 900px 全是空白；16 节竖排还要滚很久。 -->
+  <div class="card">
+    <h2>全局座位图 <span class="hint">16 节编组 · 点击座位可手动锁定/解锁</span>
+      <span class="hint" style="margin-left:auto">车厢按宽度自动并排</span>
+    </h2>
+    <div class="body">
+      <div class="legend" style="margin-bottom:10px">
+        <span><i style="background:#fff"></i>可选</span>
+        <span><i style="background:#9fb2c6"></i>用户已售</span>
+        <span><i style="background:#d9c7a8"></i>手动锁定</span>
+        <span><i style="background:#c9d4e0"></i>预设占用</span>
+        <span><i style="border:2px solid var(--quiet)"></i>静音车厢</span>
+        <span><i style="background:#e6f7f7;border-color:var(--access)"></i>近轮椅位</span>
       </div>
+      <div class="hint" id="baySummary" style="margin-bottom:6px"></div>
+      <div id="bayList" style="margin-bottom:10px"></div>
+      <div id="carriages"><div class="hint">加载中…</div></div>
     </div>
+  </div>
 
-    <div>
+  <div class="opgrid">
       <!-- 模拟余票 -->
       <div class="card">
         <h2>模拟余票 <span class="hint">调整后实时影响用户模式</span></h2>
@@ -238,7 +267,6 @@
         <h2>用户下单记录 <span class="hint" id="orderCount"></span></h2>
         <div class="body" id="orders"><div class="hint">还没有订单。</div></div>
       </div>
-    </div>
   </div>
 </div>
 
@@ -349,11 +377,11 @@ function renderCarriages() {
     return `<div class="car">
       <div class="car-head">
         <b>${String(car.number).padStart(2, "0")}车</b>
-        <span class="hint">${esc(car.class_summary || car.class_code)}
-          · ${car.rows} 排 · ${columns.join("")}</span>
-        ${printed.join("")}
-        <span class="hint" style="margin-left:auto">
-          定员 ${car.total} ／ 余 ${car.remaining}</span>
+        <span class="carspec" title="${esc(car.class_summary || car.class_code)}
+· ${car.rows} 排 · ${columns.join("")}">${esc(car.class_summary || car.class_code)}
+· ${car.rows} 排 · ${columns.join("")}</span>
+        <span class="cartags">${printed.join("")}</span>
+        <span class="carleft">定员 ${car.total} ／ 余 ${car.remaining}</span>
       </div>
       <div class="car-body"><div class="seatgrid">${grid}</div></div>
     </div>`;
