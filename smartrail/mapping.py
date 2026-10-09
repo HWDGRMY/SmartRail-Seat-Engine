@@ -172,6 +172,7 @@ def build_order(
         "pregnant": {k: dict(v) for k, v in composition.pregnant.items()},
         "child_sub": dict(composition.child_sub),
         "services": list(composition.services),
+        "wheelchair_count": composition.wheelchair_riders,
     }
 
     seq = 0
@@ -180,6 +181,10 @@ def build_order(
     adult_ids: list[str] = []
     healthy_adult_ids: list[str] = []
     summaries: list[str] = []
+    # 轮椅名额：按"成人优先、再青少年、儿童…"的顺序发出去 ——
+    # 轮椅旅客绝大多数是成人，先满足成人最符合直觉。
+    # 同一批人里才按年龄让位（1 个名额 + 1 成人 1 儿童 -> 给成人）。
+    wheelchair_left = composition.wheelchair_riders
 
     for band in BASE_GROUP_IDS:
         count = composition.base.get(band, 0)
@@ -207,6 +212,15 @@ def build_order(
             if stage:
                 needs.update(_PREGNANT_SUPPORT.get(stage, ()))
 
+            # 轮椅：**类别**维度，独立于残疾程度。
+            # 需求原话："你这么分那轮椅区有啥用啊" —— 原先按程度映射，
+            # 极重度映射到智力障碍，4 个停放位一次都不会被占用。
+            is_wheelchair = False
+            if wheelchair_left > 0:
+                needs.add(SupportNeed.WHEELCHAIR)
+                wheelchair_left -= 1
+                is_wheelchair = True
+
             # 需照护：基础分组本身要求（儿童/幼儿/婴儿），或命中重度以上残疾
             needs_care = bool(spec["needs_caregiver"])
             if stage == "term":
@@ -229,6 +243,8 @@ def build_order(
                 unusable_left -= 1
 
             tags = [spec["label"]]
+            if is_wheelchair:
+                tags.append("轮椅")
             if level:
                 from .composition import DISABILITY_LEVEL_BY_ID
 

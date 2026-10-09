@@ -737,6 +737,10 @@ def submit_compositions(payload: Mapping[str, Any]) -> dict[str, Any]:
         seat_map = submitted
         # 出票后把座位**写回台账** —— 否则开发者页的余票纹丝不动，
         # 明明出了票却还显示满车余票（实测 1152 -> 1152）。
+        #
+        # 轮椅停放位的落实在下面（orders_payload 拼好之后）：
+        # 那一刻才拿得到逐位乘客的明细。停放位是独立资源、不占座位票额，
+        # 所以这里的座位记账不受它影响。
         _persist_sold_seats(submitted)
 
     orders_payload: list[dict[str, Any]] = []
@@ -752,6 +756,15 @@ def submit_compositions(payload: Mapping[str, Any]) -> dict[str, Any]:
             entry["level"] = result.get("level")
             entry["level_label"] = result.get("level_label")
             entry["color_index"] = result.get("color_index", 0)
+            # 轮椅停放位不够时的询问文案（"询问后出正常坐票"）——
+            # 它是在 solved 上算出来的，必须搬到订单层级，
+            # 否则页面只看到"已出票"却不知道有人坐的是普通座。
+            if result.get("question"):
+                entry["question"] = result["question"]
+            if result.get("wheelchair_bays"):
+                entry["wheelchair_bays"] = result["wheelchair_bays"]
+            if result.get("notices"):
+                entry["notices"] = result["notices"]
         else:
             entry["seats"] = {}
             entry["carriages"] = []
@@ -762,12 +775,30 @@ def submit_compositions(payload: Mapping[str, Any]) -> dict[str, Any]:
 
     total_requested = sum(item["total_passengers"] for item in orders_payload)
     seated = sum((item["result"] or {}).get("seated", 0) for item in orders_payload)
-    # 被拦下的订单不计入"候补"：它们根本没提交，不是没座位
     runnable_total = sum(
         item["total_passengers"] for item in orders_payload if not item["blocked"]
     )
-    # 把已求解的订单**记进开发者台账**。
+    # **轮椅固定停放位**（需求："无障碍要求完全独立编号"）。
     #
+    # 放在这里而不是求解刚结束时：这一步要按 passenger_id 改写
+    # ``entry["result"]["passengers_detail"]``（页面「下单记录」读的就是它），
+    # 而那份 detail 是订单摘要拼进 result 的，求解刚结束时还读不到 ——
+    # 早先放在求解后，结果只有 ``entry["seats"]`` 被改写、detail 保持旧值，
+    # 页面上同一个人的座位号两处不一致（`seats` 写 04车W1、detail 写 04车01B）。
+    bay_report = _apply_bay_identity_for(orders_payload, mappings)
+    # 停放位不够时的询问文案要落到订单层级（页面直接读 entry["question"]）
+    for entry in orders_payload:
+        info = bay_report.get(str(entry.get("order_id") or ""))
+        if not info:
+            continue
+        entry["wheelchair_bays"] = {
+            "needed": info["needed"],
+            "free_before": info["free_before"],
+            "assigned": info["assigned"],
+        }
+        if info.get("question"):
+            entry["question"] = info["question"]
+    # 把已求解的订单**记进开发者台账**。
     # 需求："开发者提交的订单难道不用保留吗"。原先这条路径完全没记录 ——
     # /api/composition/submit 直接把订单交给主引擎，而"用户下单记录"
     # 读的是开发者台账（devstore.orders），所以开发者在 /dev 提交的订单
@@ -830,11 +861,103 @@ def ledger_engine() -> SeatEngine:
     return engine
 
 
+def _apply_bay_identity_for(
+    entries: Sequence[dict[str, Any]],
+    mappings: Sequence[Any],
+) -> dict[str, dict[str, Any]]:
+    """给组单结果落实轮椅固定停放位（独立编号）。
+
+    返回 ``{order_id: {needed, free_before, assigned, question}}``。
+
+    复用用户模式那一份实现（``booking._apply_bay_identity``），不另写一套 ——
+    两套实现迟早会漂移，而"停放位到底占不占座位票额"这种规则一旦漂移
+    就会变成超卖或虚占。
+
+    **停放位不够时按"询问后出普通坐票"处理**（需求原文："如果 4 个轮椅位
+    都卖完了，可在询问后出正常坐票"）：照常出票，但必须给出询问文案，
+    否则用户根本不知道第 5 位轮椅旅客坐的是普通座位。
+    """
+    from ..ticketing import get_dev_store
+    from ..ticketing.booking import _apply_bay_identity
+
+    store = get_dev_store()
+    by_id = {mapping.order.order_id: mapping.order for mapping in mappings}
+    report: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        order_id = str(entry.get("order_id") or "")
+        order = by_id.get(order_id)
+        if order is None or entry.get("blocked"):
+            continue
+        # 位置对齐，**不能按 passenger_id 匹配**：
+        # mapping.order 里的人叫 COMPOSE-adult-1（组单阶段的临时编号），
+        # 而提交给求解器的人叫 COMP-1-adult-1（订单号定下来之后重编的），
+        # 两边 ID 天然不同。submit_orders 是按顺序构造乘客的，
+        # 所以按下标配对才是正确的。
+        payloads = [
+            {"passenger_id": passenger.passenger_id,
+             "seat_id": entry.get("seats", {}).get(passenger.passenger_id)}
+            for passenger in order.passengers
+        ]
+        if any(not item["seat_id"] for item in payloads):
+            continue
+        needed = sum(
+            1 for passenger in order.passengers if passenger.is_mobility_impaired
+        )
+        free_before = len(store.free_bays())
+        assigned = _apply_bay_identity(
+            store, order, payloads,
+            color_index=int(entry.get("color_index") or 0),
+            order_id=order_id,
+        )
+        entry["seats"] = {
+            item["passenger_id"]: item["seat_id"] for item in payloads
+        }
+        entry["carriages"] = sorted({
+            item.get("carriage") for item in payloads if item.get("carriage")
+        })
+        # 逐位乘客的座位号也同步（页面「下单记录」直接读这一份）。
+        #
+        # 优先按 passenger_id 配；两边对不上时（组单阶段的临时编号
+        # 与订单号定下来之后重编的编号可能不同）退回按下标配 ——
+        # 求解结果与 order.passengers 是同一顺序构造的。
+        detail = (entry.get("result") or {}).get("passengers_detail") or []
+        by_pid = {item["passenger_id"]: item for item in payloads}
+        for index, row in enumerate(detail):
+            source = by_pid.get(row.get("passenger_id"))
+            if source is None and index < len(payloads):
+                source = payloads[index]
+            if source is None:
+                continue
+            row["seat_id"] = source["seat_id"]
+            row["wheelchair_bay"] = source.get("wheelchair_bay", "")
+        question = ""
+        if needed > free_before:
+            short = needed - free_before
+            total_bays = len(store.formation.wheelchair_bays)
+            question = (
+                f"本单有 {needed} 位轮椅旅客，但轮椅固定停放位仅剩 {free_before} 个"
+                f"（全列共 {total_bays} 个，分布在 04 车与 12 车）。"
+                f"其中 {short} 位已改出**普通坐票**"
+                f"（轮椅停放位独立于座位票额，普通坐票仍可正常出票，"
+                f"站车将协助上下车）。"
+            )
+        report[order_id] = {
+            "needed": needed,
+            "free_before": free_before,
+            "assigned": len(assigned),
+            "question": question,
+        }
+    return report
+
+
 def _persist_sold_seats(submitted: Mapping[str, Any]) -> int:
     """把求解结果里"已售出"的座位写回开发者台账。返回写入数量。
 
     必须写回，否则开发者页的余票不会减少 —— 明明出了票却仍显示满车余票，
     余票滑块与座位图也会与实际出票脱节。
+
+    **轮椅停放位不写座位**：它是独立资源、有独立编号，已由
+    :func:`_apply_bay_identity_for` 按停放位记账（不占普通座位票额）。
     """
     from ..ticketing import get_dev_store
     from ..ticketing.devstore import SOURCE_SOLD
@@ -843,10 +966,20 @@ def _persist_sold_seats(submitted: Mapping[str, Any]) -> int:
     written = 0
     for order in submitted.get("orders", []):
         order_id = str(order.get("order_id") or "")
-        for seat_id in (order.get("seats") or {}).values():
+        # 逐个乘客写，才能按 ``wheelchair_bay`` 把停放位排除掉。
+        #
+        # 注意取的是 ``passengers_detail``，不是 ``passengers`` ——
+        # submit_orders 的结果里只有前者（``passengers`` 是我一开始想当然
+        # 写下的键名，结果这个函数静默地什么都没写：
+        # 出票后 free_seats 仍然是 1238）。
+        for row in (order.get("passengers_detail") or []):
+            if row.get("wheelchair_bay"):
+                continue          # 停放位另账，见 _apply_bay_identity_for
+            seat_id = row.get("seat_id") or ""
             if not seat_id or store.is_occupied(seat_id):
                 continue
             store.occupy([seat_id], source=SOURCE_SOLD, order_id=order_id,
+                         passenger_name=str(row.get("label") or ""),
                          color_index=int(order.get("color_index") or 0))
             written += 1
     return written

@@ -260,6 +260,12 @@
               <div class="grouptitle">基础分组
                 <span class="hint">总人数只由这 5 类决定</span></div>
               <div id="baseGroups" class="steppers"></div>
+              <!-- 轮椅是**类别**维度，不是程度维度：轻度与极重度都可能用轮椅。
+                   原先按残疾程度映射到的是"智力障碍"，于是 4 个轮椅固定停放位
+                   一次都不会被占用（用户："你这么分那轮椅区有啥用啊"）。 -->
+              <div class="grouptitle" style="margin-top:12px">
+                轮椅<span class="hint">独立编号的固定停放位</span></div>
+              <div id="wheelchairBox" class="steppers"></div>
             </div>
             <div>
               <div class="grouptitle">
@@ -531,6 +537,16 @@ function renderOrders() {
       ${o.reason
         ? `<div class="hint" style="color:var(--bad)">未出票：${esc(o.reason)}</div>`
         : ""}
+      ${o.wheelchair_bays
+        ? `<div class="hint" style="color:var(--access)">轮椅停放位：`
+          + `需要 ${o.wheelchair_bays.needed} 个，当时空余 `
+          + `${o.wheelchair_bays.free_before} 个，实占 `
+          + `${o.wheelchair_bays.assigned} 个</div>`
+        : ""}
+      ${o.question
+        ? `<div class="hint" style="color:var(--bad)">需确认：`
+          + `${esc(o.question)}</div>`
+        : ""}
       ${o.rows && o.rows.length
         ? `<div class="hint">排布：${esc(o.rows.join("、"))}</div>` : ""}
       <div class="orderseats">${seats}</div>
@@ -550,6 +566,8 @@ let baseCounts = {};      // {adult: 2, child: 1, ...}
 let disabilityCounts = {}; // {"severe|adult": 1, ...}
 let pregnantCounts = {};   // {"term|adult": 1, ...}
 let childSubCounts = {};   // {child_quiet: 1, ...}
+let wheelchairCount = 0;   // 其中使用轮椅的人数（**类别**维度，不是程度）
+let wheelchairsFree = null; // 台账里空余的固定停放位数
 
 async function loadCompositionSchema() {
   const schema = await api("/api/composition/schema");
@@ -670,6 +688,44 @@ function renderBaseGroups() {
       `base-${group.id}`,
     ));
   });
+  renderWheelchair();
+}
+
+/** 轮椅人数：**独立于残疾程度**，只有它才会去占固定停放位。
+ *
+ * 用户原话："你这么分那轮椅区有啥用啊" —— 原先按残疾程度映射到的是
+ * "智力障碍"，4 个停放位一次都不会被占用，无障碍车厢形同虚设。
+ */
+function renderWheelchair() {
+  const box = $("wheelchairBox");
+  if (!box || !compositionSchema) return;
+  const spec = compositionSchema.wheelchair || {};
+  box.innerHTML = "";
+  box.appendChild(stepper(
+    spec.label || "轮椅旅客",
+    spec.desc || "其中使用轮椅的人数",
+    wheelchairCount,
+    (delta) => {
+      wheelchairCount = Math.max(0, Math.min(99, wheelchairCount + delta));
+      renderWheelchair();
+      updateTotalHint();
+    },
+    "wheelchair-count",
+  ));
+  const note = document.createElement("div");
+  note.className = "hint";
+  note.style.marginTop = "5px";
+  const free = wheelchairsFree === null ? "—" : wheelchairsFree;
+  const over = wheelchairCount > (wheelchairsFree || 0);
+  note.innerHTML = `全列 ${spec.bays_total || 4} 个停放位`
+    + `（04 车 W1/W2、12 车 W1/W2），当前空余 <b>${free}</b> 个。`
+    + `停放位不占普通座位票额。`
+    + (over
+      ? `<span style="color:var(--bad)">超出 `
+        + `${wheelchairCount - (wheelchairsFree || 0)} 位：`
+        + `提交后会询问，改出普通坐票。</span>`
+      : "");
+  box.appendChild(note);
 }
 
 function clampChildSub() {
@@ -760,6 +816,7 @@ function buildComposition() {
     child_sub: { ...childSubCounts },
     disability,
     pregnant,
+    wheelchair_count: wheelchairCount,
     key_passenger_service: $("chkKeyService").checked,
   };
 }
@@ -870,6 +927,11 @@ async function refresh() {
   renderSliders();
   renderOrders();
   const bays = snapshot.wheelchair_bays || {};
+  // 轮椅步进器要显示"当前空余几个"，跟着快照一起更新
+  if (wheelchairsFree !== bays.free) {
+    wheelchairsFree = (bays.free === undefined ? null : bays.free);
+    renderWheelchair();
+  }
   if ($("baySummary")) {
     $("baySummary").textContent =
       `轮椅固定停放位 ${bays.total} 个（04 车、12 车各 2 个）· `
@@ -903,6 +965,7 @@ async function boot() {
     Object.keys(childSubCounts).forEach((k) => { childSubCounts[k] = 0; });
     Object.keys(disabilityCounts).forEach((k) => { disabilityCounts[k] = 0; });
     Object.keys(pregnantCounts).forEach((k) => { pregnantCounts[k] = 0; });
+    wheelchairCount = 0;
     renderBaseGroups();
     renderSpecialBox();
     updateTotalHint();

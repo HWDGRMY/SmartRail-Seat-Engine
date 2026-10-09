@@ -145,8 +145,11 @@ def test_schema_returned() -> None:
     check("schema" in result and result["schema"]["base_groups"], "返回基础分组定义")
     check(len(result["schema"]["base_groups"]) == 5,
           f"基础分组 5 档（{len(result['schema']['base_groups'])}）")
-    check(result["schema"]["excluded_from_total"] == ["child_sub", "disability", "pregnant"],
-          "schema 标明哪些维度不计入总人数")
+    check(result["schema"]["excluded_from_total"] == [
+        "child_sub", "disability", "pregnant", "wheelchair_count",
+    ], f"不计入总人数的维度齐全（{result['schema']['excluded_from_total']}）")
+    check("wheelchair" in result["schema"],
+          "schema 含轮椅维度（类别，不是程度）")
 
 
 def test_class_code_reaches_the_solver() -> None:
@@ -426,6 +429,117 @@ def _comp_with_child():
     return c
 
 
+def test_wheelchair_is_a_category_not_a_severity() -> None:
+    """轮椅是**类别**维度，必须真的去占固定停放位。
+
+    真实反馈（用户）："你这么分那轮椅区有啥用啊"。
+
+    核实为真缺陷，两层：
+
+    1. 构成维度里**根本没有轮椅** —— 残疾只按"程度"（轻/中/重/极重）分，
+       而 ``_DISABILITY_SUPPORT`` 把极重度映射成 ``INTELLECTUAL_DISABILITY``
+       （智力障碍），所以按程度选的人**永远拿不到停放位**，
+       全列 4 个停放位一次都不会被占用；
+    2. 即便补上轮椅，``submit_compositions`` 也**从来没调用过
+       ``_apply_bay_identity``** —— 那一步只在用户模式里做，
+       组单路径的人是坐着普通座位、票面写着 04车01B。
+
+    轮椅与程度是**正交**的：轻度和极重度都可能用轮椅，也都可能不用。
+    所以单独计数，且不计入总人数（与其它叠加维度一致）。
+    """
+    print("[构成接口] 轮椅是类别维度")
+    from smartrail.models import SupportNeed
+    from smartrail.ticketing import get_dev_store as _store
+    from smartrail.ticketing import reset_dev_store as _reset
+
+    wheelchair_payload = {
+        **comp(adult=2, child=2), "class_code": "二等座",
+        "wheelchair_count": 1, "key_passenger_service": True,
+    }
+
+    # ① 0 位轮椅：停放位一个都不该被占，普通人拿普通座
+    _reset()
+    plain = {**comp(adult=2, child=2), "class_code": "二等座"}
+    result = service.submit_compositions({"orders": [plain]})
+    seats = sorted((result["orders"][0].get("seats") or {}).values())
+    check(all("W" not in seat for seat in seats),
+          f"不用轮椅时不占停放位（{seats}）")
+    check(len(_store().occupied_bay_ids()) == 0, "停放位全空")
+
+    # ② 1 位轮椅：票面写**停放位独立编号**，不占普通座位票额
+    _reset()
+    free_seats_before = len(_store().free_seats())
+    result = service.submit_compositions({"orders": [wheelchair_payload]})
+    order = result["orders"][0]
+    seats = sorted((order.get("seats") or {}).values())
+    bays = [s for s in seats if "W" in s]
+    check(len(bays) == 1, f"1 位轮椅拿到 1 个停放位（{seats}）")
+    check(bays[0].startswith("04车") or bays[0].startswith("12车"),
+          f"停放位在无障碍车厢（{bays[0]}）")
+    check(set(_store().occupied_bay_ids()) == set(bays),
+          f"台账按停放位独立记账（{sorted(_store().occupied_bay_ids())}）")
+    detail = (order.get("result") or {}).get("passengers_detail") or []
+    rider = [row for row in detail if SupportNeed.WHEELCHAIR.value
+             in (row.get("support_needs") or [])]
+    check(len(rider) == 1 and rider[0]["seat_id"] in bays,
+          f"那位轮椅旅客的票面就是停放位编号（{rider[0]['seat_id'] if rider else '—'}）")
+    ordinary = [s for s in seats if "W" not in s]
+    check(all(_store().is_occupied(s) for s in ordinary),
+          f"同单其余 {len(ordinary)} 人的普通座位已记账（{ordinary}）")
+
+    # ③ 4 位轮椅：4 个停放位刚好用完
+    _reset()
+    result = service.submit_compositions({"orders": [{
+        **comp(adult=4, child=0), "class_code": "二等座",
+        "wheelchair_count": 4, "key_passenger_service": True,
+    }]})
+    used = sorted(_store().occupied_bay_ids())
+    check(used == ["04车W1", "04车W2", "12车W1", "12车W2"],
+          f"4 位轮椅占满 4 个停放位且编号独立（{used}）")
+
+    # ④ 5 位轮椅：超出不拒票 —— **询问后改出普通坐票**（需求原文）
+    _reset()
+    result = service.submit_compositions({"orders": [{
+        **comp(adult=5, child=0), "class_code": "二等座",
+        "wheelchair_count": 5, "key_passenger_service": True,
+    }]})
+    order = result["orders"][0]
+    seats = sorted((order.get("seats") or {}).values())
+    check(len(seats) == 5, f"第 5 位仍出票（{seats}）")
+    check(sum(1 for s in seats if "W" in s) == 4, "4 位进停放位")
+    check(bool(order.get("question")),
+          f"给出询问文案（{(order.get('question') or '')[:30]}…）")
+    check((order.get("wheelchair_bays") or {}).get("needed") == 5,
+          f"记录里标明需要 5 个停放位"
+          f"（{order.get('wheelchair_bays')}）")
+
+    # ⑤ 轮椅与残疾程度正交：轻度残疾也能用轮椅
+    _reset()
+    mild = {**comp(adult=2, child=0), "class_code": "二等座",
+            "wheelchair_count": 1, "key_passenger_service": True}
+    mild["disability"] = {
+        lv["id"]: {b: (1 if (lv["id"] == "mild" and b == "adult") else 0)
+                   for b in _service_bands()}
+        for lv in _service_levels()
+    }
+    result = service.submit_compositions({"orders": [mild]})
+    seats = sorted((result["orders"][0].get("seats") or {}).values())
+    check(any("W" in s for s in seats),
+          f"轻度残疾 + 轮椅同样进停放位（{seats}）")
+
+
+def _service_bands():
+    from smartrail.composition import composition_schema
+
+    return [b["id"] for b in composition_schema()["age_bands"]]
+
+
+def _service_levels():
+    from smartrail.composition import composition_schema
+
+    return composition_schema()["disability_levels"]
+
+
 def main() -> int:
     tests = [
         test_blocked_orders_are_not_submitted,
@@ -436,6 +550,7 @@ def main() -> int:
         test_composition_respects_ledger_inventory,
         test_same_order_sits_in_one_row_when_possible,
         test_key_service_and_companion_rules,
+        test_wheelchair_is_a_category_not_a_severity,
         test_schema_returned,
     ]
     if UNDER_PYTEST:

@@ -188,6 +188,27 @@ class OrderComposition:
     漏传的后果实测过：开发者页选了"二等座"，求解器却按"不限席别"处理，
     给 2 成人 2 儿童发了一等座 —— 用户报的"买二等座出一等座"。
     """
+    wheelchair_count: int = 0
+    """其中**使用轮椅**的人数。
+
+    为什么要单列（真实反馈："你这么分那轮椅区有啥用啊"）：
+
+    残疾的"程度"（轻/中/重/极重）**不等于**"类别"。原先按程度映射支持需求，
+    极重度映射到的是 ``INTELLECTUAL_DISABILITY``（智力障碍）——
+    于是选"极重度残疾"的人**永远拿不到轮椅固定停放位**，
+    4 个停放位一次都不会被占用，整块无障碍车厢形同虚设。
+
+    轮椅是**类别**维度：轻度和极重度都可能用轮椅，也都可能不用。
+    所以这里单独计数，映射到 ``SupportNeed.WHEELCHAIR``，
+    由求解器优先安排进轮椅固定停放位。
+
+    与其它叠加维度一样，它**不计入总人数** —— 数值不得超过基础分组总人数。
+    """
+
+    @property
+    def wheelchair_riders(self) -> int:
+        """实际会分到轮椅的乘客数（受总人数上限约束）。"""
+        return max(0, min(self.wheelchair_count, self.total_passengers))
 
     # -- 总人数 ----------------------------------------------------------
     @property
@@ -264,6 +285,7 @@ class OrderComposition:
             "order_id": self.order_id,
             "note": self.note,
             "class_code": self.class_code,
+            "wheelchair_count": self.wheelchair_count,
             "base": dict(self.base),
             "child_sub": dict(self.child_sub),
             "disability": {k: dict(v) for k, v in self.disability.items()},
@@ -280,6 +302,7 @@ class OrderComposition:
             order_id=str(payload.get("order_id") or order_id),
             note=str(payload.get("note") or ""),
             class_code=str(payload.get("class_code") or ""),
+            wheelchair_count=_as_count(payload.get("wheelchair_count", 0)),
         )
         raw_base = payload.get("base") or {}
         for key in BASE_GROUP_IDS:
@@ -588,7 +611,17 @@ def composition_schema(policy: PlatformPolicy | None = None) -> dict[str, Any]:
             {"id": item["id"], "label": item["label"]} for item in BASE_GROUP_FIELDS
         ],
         "total_formula": "adult + youth + child + toddler + infant",
-        "excluded_from_total": ["child_sub", "disability", "pregnant"],
+        "excluded_from_total": ["child_sub", "disability", "pregnant",
+                                "wheelchair_count"],
+        # 轮椅是**类别**维度，不是程度维度：轻度与极重度都可能用轮椅。
+        # 单列出来，否则 4 个轮椅固定停放位永远不会被占用。
+        "wheelchair": {
+            "id": "wheelchair_count",
+            "label": "轮椅旅客",
+            "desc": "其中使用轮椅的人数（独立编号的固定停放位，不占普通座位票额）",
+            "bays_total": 4,
+            "bays_note": "全列 4 个停放位：04 车 W1/W2、12 车 W1/W2",
+        },
         "policy": policy.to_dict(),
         "predicates": {
             "minors_under_14": "infant + toddler + child",

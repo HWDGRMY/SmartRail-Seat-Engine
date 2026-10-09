@@ -276,8 +276,9 @@ check([g["id"] for g in schema["base_groups"]] == basic_ids,
       "基础分组与 /api/composition/schema 完全一致")
 check(schema["total_formula"] == "adult + youth + child + toddler + infant",
       f"总人数公式 {schema['total_formula']}")
-check(set(schema["excluded_from_total"]) == {"child_sub", "disability", "pregnant"},
-      f"特殊人群不计入总人数（{schema['excluded_from_total']}）")
+check(set(schema["excluded_from_total"])
+      == {"child_sub", "disability", "pregnant", "wheelchair_count"},
+      f"叠加维度不计入总人数（{schema['excluded_from_total']}）")
 check("pregnant" in {g["id"] for g in special}
       and "disabled" in {g["id"] for g in special},
       "孕妇与残疾单列为特殊人群")
@@ -459,6 +460,67 @@ for label, composed, expect_ok in (
           f"{label} -> {'可出票' if not blocked_now else '拦截'}")
 
 check("chkKeyService" in dev_html, "开发者页含『预约重点旅客服务』勾选框")
+
+print()
+print("=== 目标 12e6：轮椅是类别维度，必须真的占固定停放位 ===")
+# 用户原话："你这么分那轮椅区有啥用啊"
+# 核实：残疾只按程度分，极重度映射到"智力障碍"，于是 4 个停放位
+# 一次都不会被占用；且组单路径从来没调用过停放位分配。
+check("wheelchair" in schema, "composition schema 含轮椅维度")
+check("wheelchair_count" in schema["excluded_from_total"],
+      "轮椅不计入总人数（与其它叠加维度一致）")
+
+
+def _wheel(adult=2, child=0, count=0):
+    return {
+        "class_code": "二等座",
+        "wheelchair_count": count,
+        "key_passenger_service": bool(count),
+        "base": {"adult": adult, "youth": 0, "child": child,
+                 "toddler": 0, "infant": 0},
+        "child_sub": {g["id"]: 0 for g in schema["child_sub_groups"]},
+        "disability": {lv["id"]: {b: 0 for b in bands_list}
+                       for lv in schema["disability_levels"]},
+        "pregnant": {st["id"]: {b: 0 for b in bands_list}
+                     for st in schema["pregnant_stages"]},
+    }
+
+
+def _bays_used():
+    snap_now = call("/api/dev/snapshot")[1]
+    return sorted(b["bay_id"] for b in snap_now["wheelchair_bays"]["bays"]
+                  if b["occupied"])
+
+
+call("/api/dev/reset", {"passengers": True})
+style, body = call("/api/composition/submit",
+                   {"orders": [_wheel(adult=2, child=2, count=1)]})
+seats = sorted((body["orders"][0].get("seats") or {}).values())
+bays = [s for s in seats if "W" in s]
+check(len(bays) == 1, f"1 位轮椅拿到 1 个停放位（{seats}）")
+check(_bays_used() == bays, f"台账按停放位独立记账（{_bays_used()}）")
+detail = (body["orders"][0].get("result") or {}).get("passengers_detail") or []
+rider = [r for r in detail if "wheelchair" in (r.get("support_needs") or [])]
+check(bool(rider) and rider[0]["seat_id"] in bays,
+      f"票面写停放位编号（{rider[0]['seat_id'] if rider else '—'}）")
+check(len(seats) - len(bays) == 3,
+      f"停放位不占座位票额：4 人里只有 3 人扣座位（{len(seats) - len(bays)}）")
+
+call("/api/dev/reset", {"passengers": True})
+call("/api/composition/submit", {"orders": [_wheel(adult=4, count=4)]})
+check(_bays_used() == ["04车W1", "04车W2", "12车W1", "12车W2"],
+      f"4 位轮椅占满 4 个停放位（{_bays_used()}）")
+
+call("/api/dev/reset", {"passengers": True})
+style, body = call("/api/composition/submit",
+                   {"orders": [_wheel(adult=5, count=5)]})
+order = body["orders"][0]
+out_seats = sorted((order.get("seats") or {}).values())
+check(len(out_seats) == 5, f"第 5 位仍出票（{out_seats}）")
+check(bool(order.get("question")),
+      f"给出询问文案（{(order.get('question') or '')[:26]}…）")
+check((order.get("wheelchair_bays") or {}).get("needed") == 5,
+      f"记录标明需要 5 个停放位（{order.get('wheelchair_bays')}）")
 
 print()
 print("=== 目标 12f：开发者提交的订单必须被保留 ===")
