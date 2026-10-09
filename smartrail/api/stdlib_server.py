@@ -119,6 +119,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, service.training_curve())
             elif path == "/api/orders/types":
                 self._send_json(200, self._order_types({})[1])
+            elif path == "/api/composition/schema":
+                self._send_json(200, self._composition_schema({})[1])
             elif path.startswith("/api/scenario/passengers/"):
                 name = path.rsplit("/", 1)[-1]
                 self._send_json(200, service.scenario_passengers(name))
@@ -155,6 +157,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/simulate/concurrent": self._simulate,
             "/api/orders/submit": self._submit_orders,
             "/api/orders/types": self._order_types,
+            "/api/composition/check": self._check_composition,
+            "/api/composition/submit": self._submit_compositions,
         }
         handler = handlers.get(path)
         if handler is None:
@@ -228,6 +232,45 @@ class Handler(BaseHTTPRequestHandler):
             "outcome_levels": OUTCOME_LEVELS,
             "feasibility_codes": feasibility_catalog(),
         }
+
+    def _composition_schema(self, payload: dict[str, Any]) -> tuple[int, Any]:
+        """人员构成的字段定义与校验规则（供 OrderEditor 渲染）。"""
+        from ..composition import composition_schema
+
+        return 200, composition_schema()
+
+    def _check_composition(self, payload: dict[str, Any]) -> tuple[int, Any]:
+        """只做组单校验，不求解（前端实时提示用）。"""
+        from ..composition import OrderComposition, PlatformPolicy, check_composition
+
+        raw = list(payload.get("orders") or [])
+        if not raw:
+            return 200, {"orders": [], "all_ok": True}
+        policy_payload = payload.get("policy") or {}
+        policy = PlatformPolicy(
+            late_pregnancy_requires_key_service=bool(
+                policy_payload.get("late_pregnancy_requires_key_service", False)
+            ),
+            late_pregnancy_requires_companion=bool(
+                policy_payload.get("late_pregnancy_requires_companion", False)
+            ),
+            moderate_cannot_companion=bool(
+                policy_payload.get("moderate_cannot_companion", False)
+            ),
+        )
+        checks = []
+        for index, item in enumerate(raw):
+            composition = OrderComposition.from_dict(item, order_id=f"COMP-{index + 1}")
+            checks.append(check_composition(composition, policy).to_dict())
+        return 200, {
+            "orders": checks,
+            "all_ok": all(item["ok"] for item in checks),
+            "blocked_count": sum(1 for item in checks if not item["ok"]),
+        }
+
+    def _submit_compositions(self, payload: dict[str, Any]) -> tuple[int, Any]:
+        """按人员构成提交多张订单：先校验，通过才求解。"""
+        return 200, service.submit_compositions(payload)
 
 
 def serve(host: str = "127.0.0.1", port: int = 8000, verbose: bool = False) -> ThreadingHTTPServer:

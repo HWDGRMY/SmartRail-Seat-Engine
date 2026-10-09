@@ -203,6 +203,48 @@
   .umreason{font-size:12.5px;color:#556;margin-top:3px;line-height:1.6}
   .unmetok{border-left:4px solid var(--ok);background:#f0fbf4;border-radius:0 7px 7px 0;
     padding:9px 12px;font-size:13px;color:#217a45}
+  /* ---------- OrderEditor（模块化组单） ---------- */
+  .switcher{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+  .switcher button{border:1px solid var(--line);background:#fff;border-radius:6px;
+    padding:5px 12px;font-size:12.5px;cursor:pointer;font-family:inherit;color:#556}
+  .switcher button.active{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600}
+  .switcher button.bad{border-color:#f0b4b1;color:#b3352f}
+  .switcher button.active.bad{background:#e5504a;border-color:#e5504a;color:#fff}
+  .composer-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:960px){.composer-grid{grid-template-columns:1fr}}
+  .composer-col{display:flex;flex-direction:column;gap:12px}
+  .cgroup{border:1px solid var(--line);border-radius:8px;background:#fbfcfd;padding:10px 12px}
+  .cgroup-head{display:flex;align-items:baseline;gap:8px;font-size:13px;font-weight:600;
+    color:#4a5a6b;margin-bottom:9px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+  .cgroup-head .hint{font-weight:400}
+  .cgroup-body{display:flex;flex-direction:column;gap:6px}
+  .crow{display:flex;align-items:center;gap:8px}
+  .crow .rlabel{flex:1;font-size:12.5px;color:#333}
+  .crow .rdesc{font-size:11px;color:#98a2ae}
+  .crow .rnum{width:34px;text-align:center;font-variant-numeric:tabular-nums;
+    font-weight:600;font-size:13.5px;color:#333}
+  .crow .rnum.zero{color:#c2c9d1;font-weight:400}
+  .btnminus,.btnplus{width:26px;height:26px;border:1px solid var(--line);background:#fff;
+    border-radius:5px;cursor:pointer;font-size:14px;line-height:1;color:#556;font-family:inherit;padding:0}
+  .btnminus:hover,.btnplus:hover{border-color:var(--blue);color:var(--blue-d);background:#f2f7fe}
+  .btnminus:disabled,.btnplus:disabled{opacity:.35;cursor:not-allowed}
+  .sub-label{font-size:12px;font-weight:600;color:#7b8794;margin:6px 0 3px}
+  .sub-matrix{margin-left:10px;padding-left:10px;border-left:2px solid #e9edf2;
+    display:flex;flex-direction:column;gap:4px}
+  .sev-warn{font-size:11.5px;color:#c2703a;margin-top:5px}
+  .csummary-box{border:1px solid var(--line);border-radius:8px;background:#f7f9fb;
+    padding:11px 13px;margin-top:12px}
+  .csum-row{display:flex;flex-wrap:wrap;gap:16px;font-size:13px;color:#333}
+  .csum-item b{font-size:17px;font-variant-numeric:tabular-nums}
+  .csum-formula{font-size:11.5px;color:#98a2ae;margin-top:5px}
+  .cerr{margin-top:7px;padding:8px 10px;border-left:3px solid var(--bad);background:#fdf2f1;
+    border-radius:0 6px 6px 0;font-size:12.5px;color:#b3352f;line-height:1.6}
+  .cwarn{margin-top:7px;padding:8px 10px;border-left:3px solid var(--warn);background:#fdf8f0;
+    border-radius:0 6px 6px 0;font-size:12.5px;color:#8a6a2a;line-height:1.6}
+  .cok{margin-top:7px;padding:8px 10px;border-left:3px solid var(--ok);background:#f0fbf4;
+    border-radius:0 6px 6px 0;font-size:12.5px;color:#217a45}
+  .blocked-card{border-left:4px solid var(--bad);background:#fdf2f1;border-radius:0 7px 7px 0;
+    padding:9px 12px;margin-bottom:7px}
   .seat{width:30px;height:28px;border-radius:4px;border:1px solid #cfd6de;background:#fff;
         font-size:10px;color:#7d8794;display:inline-flex;align-items:center;
         justify-content:center;flex:0 0 auto;overflow:hidden}
@@ -342,6 +384,85 @@
     </div>
     <div id="csummary" style="margin-top:12px"></div>
     <div id="unmetBox" style="margin-top:12px"></div>
+  </section>
+
+  <!-- ======================= OrderEditor（模块化组单） ======================= -->
+  <section class="panel" id="composer">
+    <h2>按人员构成组单（基础分组 / 儿童细分 / 残疾 / 孕妇）</h2>
+    <div class="hint" style="margin-bottom:10px">
+      <b>总人数只由基础分组求和</b>（成人+青少年+儿童+幼儿+婴儿）。
+      儿童细分、残疾、孕妇是<b>独立维度</b>，只做标签、服务与出票规则，
+      <b>不计入总人数</b>；陪同人本身已计入基础分组成人，也不额外加总人数。
+      校验不通过的订单<b>不予出票</b>，并说明原因。
+    </div>
+
+    <!-- OrderSwitcher -->
+    <div class="switcher" id="orderSwitcher" data-testid="order-switcher"></div>
+
+    <div class="composer-grid">
+      <div class="composer-col">
+        <!-- BaseGroup -->
+        <div class="cgroup" id="baseGroup" data-testid="base-group">
+          <div class="cgroup-head">
+            <span>基础分组</span>
+            <span class="hint">总人数的唯一来源</span>
+          </div>
+          <div class="cgroup-body" id="baseGroupBody"></div>
+        </div>
+
+        <!-- ChildSubGroup -->
+        <div class="cgroup" id="childSubGroup" data-testid="child-sub-group">
+          <div class="cgroup-head">
+            <span>儿童细分</span>
+            <span class="hint">只是标签，不计入总人数</span>
+          </div>
+          <div class="cgroup-body" id="childSubGroupBody"></div>
+        </div>
+
+        <!-- CompanionCounter + ServiceGroup -->
+        <div class="cgroup" id="serviceGroup" data-testid="service-group">
+          <div class="cgroup-head">
+            <span>陪同与服务</span>
+            <span class="hint">陪同人已计入成人，不额外加人</span>
+          </div>
+          <div class="cgroup-body" id="serviceGroupBody"></div>
+        </div>
+      </div>
+
+      <div class="composer-col">
+        <!-- DisabilityGroup -->
+        <div class="cgroup" id="disabilityGroup" data-testid="disability-group">
+          <div class="cgroup-head">
+            <span>残疾（独立维度）</span>
+            <span class="hint">程度 × 年龄段，不计入总人数</span>
+          </div>
+          <div class="cgroup-body" id="disabilityGroupBody"></div>
+        </div>
+
+        <!-- PregnantGroup -->
+        <div class="cgroup" id="pregnantGroup" data-testid="pregnant-group">
+          <div class="cgroup-head">
+            <span>孕妇（独立维度）</span>
+            <span class="hint">孕期 × 年龄段，不计入总人数</span>
+          </div>
+          <div class="cgroup-body" id="pregnantGroupBody"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- OrderSummary -->
+    <div class="csummary-box" id="orderSummary" data-testid="order-summary"></div>
+
+    <!-- OrderActions -->
+    <div class="row" style="margin-top:10px" id="orderActions" data-testid="order-actions">
+      <button class="btn" id="btnComposeSubmit">提交全部订单</button>
+      <button class="btn ghost small" id="btnComposeAdd">+ 新建订单</button>
+      <button class="btn ghost small" id="btnComposeDup">复制到新订单</button>
+      <button class="btn ghost small" id="btnComposeDemo">载入示例（含拒票单）</button>
+      <button class="btn ghost small" id="btnComposeClear">清空</button>
+      <span class="hint" id="composeStatus"></span>
+    </div>
+    <div id="composeResult" style="margin-top:12px"></div>
   </section>
 
   <div class="grid" style="margin-top:14px">
@@ -817,6 +938,10 @@ const MODE_LABEL = {
   strong: "强绑定（尽量一起）",
   soft: "软绑定（各自出行）",
 };
+// 与后端 composition.py 的 SEVERE_LEVEL_IDS / TERM_STAGE_IDS 保持一致；
+// 启动时由 /api/composition/schema 覆盖，避免两边硬编码漂移。
+let SEVERE_LEVEL_IDS = ["severe", "critical"];
+let TERM_STAGE_IDS = ["term"];
 
 let presetCatalog = [];
 let submitResult = null;
@@ -1152,6 +1277,539 @@ function renderConcurrentSeatMap() {
      </div><div class="seatwrap">${lines}</div>`;
 }
 
+/* ======================= OrderEditor（模块化组单） =======================
+ * 结构严格对应规格第八节的模块划分：
+ *   OrderEditor
+ *   ├─ OrderSwitcher     订单切换（数据隔离）
+ *   ├─ BaseGroup         基础分组（总人数唯一来源）
+ *   ├─ ChildSubGroup     儿童细分（安静/吵闹，只是标签）
+ *   ├─ DisabilityGroup   残疾（程度 × 年龄段）
+ *   ├─ PregnantGroup     孕妇（孕期 × 年龄段）
+ *   ├─ CompanionCounter  陪同人数
+ *   ├─ ServiceGroup      重点旅客 / 轮椅 / 担架 / 导盲犬 / 无障碍车厢
+ *   ├─ OrderSummary      总人数、特殊需求、校验提示
+ *   └─ OrderActions      提交、新建、复制、清空
+ * 每个分组独立渲染、独立 data-testid，校验走后端同一套纯函数。
+ * ======================================================================= */
+
+const ZERO_SCHEMA = {
+  base_groups: [], child_sub_groups: [], disability_levels: [],
+  pregnant_stages: [], age_bands: [], policy: {},
+};
+let composeSchema = ZERO_SCHEMA;
+let compositions = [];          // 每张订单一份，互不共享引用
+let activeCompose = 0;
+let composeChecks = [];         // 后端返回的校验结论
+let composeResult = null;
+
+function emptyComposition(note) {
+  const base = {}, child = {}, disability = {}, pregnant = {};
+  for (const item of composeSchema.base_groups) base[item.id] = 0;
+  for (const item of composeSchema.child_sub_groups) child[item.id] = 0;
+  for (const level of composeSchema.disability_levels) {
+    disability[level.id] = {};
+    for (const band of composeSchema.age_bands) disability[level.id][band.id] = 0;
+  }
+  for (const stage of composeSchema.pregnant_stages) {
+    pregnant[stage.id] = {};
+    for (const band of composeSchema.age_bands) pregnant[stage.id][band.id] = 0;
+  }
+  return {
+    note: note || "",
+    base, child_sub: child, disability, pregnant,
+    companion_count: null,
+    key_passenger_service: false,
+    services: [],
+  };
+}
+
+/* ---- 计算属性：与后端 composition.py 同一套语义 ---- */
+function totalPassengers(c) {
+  return composeSchema.base_groups.reduce((sum, item) => sum + (c.base[item.id] || 0), 0);
+}
+
+function minorsUnder14(c) {
+  // 未满 14 周岁：婴儿 + 幼儿 + 儿童（14 岁整算青少年，不计入）
+  return (c.base.infant || 0) + (c.base.toddler || 0) + (c.base.child || 0);
+}
+
+function levelCount(c, levelId) {
+  return composeSchema.age_bands.reduce(
+    (sum, band) => sum + ((c.disability[levelId] || {})[band.id] || 0), 0);
+}
+
+function stageCount(c, stageId) {
+  return composeSchema.age_bands.reduce(
+    (sum, band) => sum + ((c.pregnant[stageId] || {})[band.id] || 0), 0);
+}
+
+function severeCount(c) {
+  return SEVERE_LEVEL_IDS.reduce((sum, id) => sum + levelCount(c, id), 0);
+}
+
+function termCount(c) {
+  return TERM_STAGE_IDS.reduce((sum, id) => sum + stageCount(c, id), 0);
+}
+
+function unavailableAdults(c) {
+  const policy = composeSchema.policy || {};
+  const levels = policy.moderate_cannot_companion
+    ? [...SEVERE_LEVEL_IDS, "moderate"] : [...SEVERE_LEVEL_IDS];
+  return levels.reduce((sum, id) => sum + ((c.disability[id] || {}).adult || 0), 0);
+}
+
+function healthyAdults(c) {
+  return Math.max(0, (c.base.adult || 0) - unavailableAdults(c));
+}
+
+function requiredCompanions(c) {
+  let need = Math.max(severeCount(c), termCount(c));
+  if (minorsUnder14(c) > 0) need = Math.max(need, 1);
+  return need;
+}
+
+/* ---- 分组渲染 ---- */
+function stepper(label, desc, value, onMinus, onPlus, testid) {
+  return `<div class="crow" data-testid="${testid}">
+    <span class="rlabel">${label}${desc ? `<div class="rdesc">${desc}</div>` : ""}</span>
+    <button class="btnminus" ${value <= 0 ? "disabled" : ""}>−</button>
+    <span class="rnum${value ? "" : " zero"}">${value}</span>
+    <button class="btnplus" ${value >= 99 ? "disabled" : ""}>+</button>
+  </div>`;
+}
+
+function renderBaseGroup() {
+  const c = compositions[activeCompose];
+  $("baseGroupBody").innerHTML = composeSchema.base_groups.map((item) =>
+    stepper(item.label, item.desc, c.base[item.id] || 0, null, null,
+            `base-${item.id}`)).join("");
+  // 绑定加减
+  composeSchema.base_groups.forEach((item) => {
+    const row = document.querySelector(`[data-testid="base-${item.id}"]`);
+    if (!row) return;
+    const [minus, plus] = row.querySelectorAll("button");
+    minus.onclick = () => bumpBase(item.id, -1);
+    plus.onclick = () => bumpBase(item.id, +1);
+  });
+}
+
+function bumpBase(id, delta) {
+  const c = compositions[activeCompose];
+  const next = Math.max(0, Math.min(99, (c.base[id] || 0) + delta));
+  if (next === c.base[id]) return;
+  c.base[id] = next;
+  // 基础人数减少时，同步裁掉超出该年龄段的残疾/孕妇计数，避免数据不自洽
+  trimDimensions(c);
+  refreshComposer();
+}
+
+function trimDimensions(c) {
+  for (const level of composeSchema.disability_levels) {
+    for (const band of composeSchema.age_bands) {
+      if (c.disability[level.id][band.id] > c.base[band.id]) {
+        c.disability[level.id][band.id] = c.base[band.id];
+      }
+    }
+  }
+  for (const stage of composeSchema.pregnant_stages) {
+    for (const band of composeSchema.age_bands) {
+      if (c.pregnant[stage.id][band.id] > c.base[band.id]) {
+        c.pregnant[stage.id][band.id] = c.base[band.id];
+      }
+    }
+  }
+  const tagged = (c.child_sub.child_quiet || 0) + (c.child_sub.child_noisy || 0);
+  if (tagged > c.base.child) {
+    c.child_sub.child_quiet = 0;
+    c.child_sub.child_noisy = 0;
+  }
+}
+
+function renderChildSubGroup() {
+  const c = compositions[activeCompose];
+  $("childSubGroupBody").innerHTML =
+    composeSchema.child_sub_groups.map((item) =>
+      stepper(item.label, "", c.child_sub[item.id] || 0, null, null,
+              `childsub-${item.id}`)).join("") +
+    `<div class="csum-formula">儿童人数 ${c.base.child || 0}，
+       已贴标签 ${(c.child_sub.child_quiet || 0) + (c.child_sub.child_noisy || 0)}</div>`;
+  composeSchema.child_sub_groups.forEach((item) => {
+    const row = document.querySelector(`[data-testid="childsub-${item.id}"]`);
+    if (!row) return;
+    const [minus, plus] = row.querySelectorAll("button");
+    const bump = (delta) => {
+      const tagged = (c.child_sub.child_quiet || 0) + (c.child_sub.child_noisy || 0);
+      const current = c.child_sub[item.id] || 0;
+      const next = Math.max(0, Math.min(99, current + delta));
+      if (next === current) return;
+      // 标签总数不能超过儿童人数
+      if (delta > 0 && tagged >= (c.base.child || 0)) {
+        toast("行为标签数不能超过儿童人数");
+        return;
+      }
+      c.child_sub[item.id] = next;
+      refreshComposer();
+    };
+    minus.onclick = () => bump(-1);
+    plus.onclick = () => bump(+1);
+  });
+}
+
+function renderDisabilityGroup() {
+  const c = compositions[activeCompose];
+  const body = $("disabilityGroupBody");
+  body.innerHTML = composeSchema.disability_levels.map((level) => {
+    const flag = level.requires_key_service
+      ? '<span class="hint" style="color:#c2703a">强制重点旅客 + 成人陪同</span>' : "";
+    return `<div class="sub-label">${level.label} ${flag}</div>
+      <div class="sub-matrix">
+        ${composeSchema.age_bands.map((band) =>
+          stepper(band.label, "", c.disability[level.id][band.id] || 0, null, null,
+                  `dis-${level.id}-${band.id}`)).join("")}
+      </div>`;
+  }).join("");
+  composeSchema.disability_levels.forEach((level) => {
+    composeSchema.age_bands.forEach((band) => {
+      const row = document.querySelector(`[data-testid="dis-${level.id}-${band.id}"]`);
+      if (!row) return;
+      const [minus, plus] = row.querySelectorAll("button");
+      const bump = (delta) => {
+        const current = c.disability[level.id][band.id] || 0;
+        const next = Math.max(0, Math.min(99, current + delta));
+        if (next === current) return;
+        if (delta > 0) {
+          const used = levelSumForBand(c, band.id);
+          if (used >= (c.base[band.id] || 0)) {
+            toast(`${band.label}人数为 ${c.base[band.id] || 0}，残疾人数不能超过它`);
+            return;
+          }
+        }
+        c.disability[level.id][band.id] = next;
+        refreshComposer();
+      };
+      minus.onclick = () => bump(-1);
+      plus.onclick = () => bump(+1);
+    });
+  });
+}
+
+function levelSumForBand(c, bandId) {
+  return composeSchema.disability_levels.reduce(
+    (sum, level) => sum + (c.disability[level.id][bandId] || 0), 0);
+}
+
+function stageSumForBand(c, bandId) {
+  return composeSchema.pregnant_stages.reduce(
+    (sum, stage) => sum + (c.pregnant[stage.id][bandId] || 0), 0);
+}
+
+function renderPregnantGroup() {
+  const c = compositions[activeCompose];
+  $("pregnantGroupBody").innerHTML = composeSchema.pregnant_stages.map((stage) => {
+    const flag = stage.requires_key_service
+      ? '<span class="hint" style="color:#c2703a">强制重点旅客 + 成人陪同</span>'
+      : (stage.configurable ? '<span class="hint">平台可配置</span>' : "");
+    return `<div class="sub-label">${stage.label} ${flag}</div>
+      <div class="sub-matrix">
+        ${composeSchema.age_bands.map((band) =>
+          stepper(band.label, "", c.pregnant[stage.id][band.id] || 0, null, null,
+                  `preg-${stage.id}-${band.id}`)).join("")}
+      </div>`;
+  }).join("");
+  composeSchema.pregnant_stages.forEach((stage) => {
+    composeSchema.age_bands.forEach((band) => {
+      const row = document.querySelector(`[data-testid="preg-${stage.id}-${band.id}"]`);
+      if (!row) return;
+      const [minus, plus] = row.querySelectorAll("button");
+      const bump = (delta) => {
+        const current = c.pregnant[stage.id][band.id] || 0;
+        const next = Math.max(0, Math.min(99, current + delta));
+        if (next === current) return;
+        if (delta > 0 && stageSumForBand(c, band.id) >= (c.base[band.id] || 0)) {
+          toast(`${band.label}人数为 ${c.base[band.id] || 0}，孕妇人数不能超过它`);
+          return;
+        }
+        c.pregnant[stage.id][band.id] = next;
+        refreshComposer();
+      };
+      minus.onclick = () => bump(-1);
+      plus.onclick = () => bump(+1);
+    });
+  });
+}
+
+function renderServiceGroup() {
+  const c = compositions[activeCompose];
+  const services = [
+    ["wheelchair", "轮椅"], ["stretcher", "担架"],
+    ["guide_dog", "导盲犬"], ["accessible_carriage", "无障碍车厢"],
+  ];
+  $("serviceGroupBody").innerHTML = `
+    ${stepper("陪同人数", "可选登记；出票资格看可用健康成人", c.companion_count || 0,
+              null, null, "companion")}
+    <div class="crow" data-testid="key-service">
+      <span class="rlabel">重点旅客服务
+        <div class="rdesc">重度/极重度残疾、37周以上孕妇强制要求</div></span>
+      <input type="checkbox" id="chkKeyService" ${c.key_passenger_service ? "checked" : ""}>
+    </div>
+    <div class="crow" data-testid="extra-services" style="flex-wrap:wrap;gap:10px">
+      <span class="rlabel">其它服务</span>
+      ${services.map(([id, label]) => `<label class="muted" style="font-size:12px">
+        <input type="checkbox" class="chkService" data-id="${id}"
+          ${c.services.includes(id) ? "checked" : ""}> ${label}</label>`).join("")}
+    </div>`;
+  const [minus, plus] = document.querySelector('[data-testid="companion"]')
+    .querySelectorAll("button");
+  minus.onclick = () => {
+    c.companion_count = Math.max(0, (c.companion_count || 0) - 1);
+    refreshComposer();
+  };
+  plus.onclick = () => {
+    c.companion_count = Math.min(99, (c.companion_count || 0) + 1);
+    refreshComposer();
+  };
+  $("chkKeyService").onchange = (event) => {
+    c.key_passenger_service = event.target.checked;
+    refreshComposer();
+  };
+  document.querySelectorAll(".chkService").forEach((box) => {
+    box.onchange = () => {
+      const id = box.dataset.id;
+      c.services = box.checked
+        ? [...new Set([...c.services, id])] : c.services.filter((x) => x !== id);
+      refreshComposer();
+    };
+  });
+}
+
+function renderOrderSwitcher() {
+  const box = $("orderSwitcher");
+  box.innerHTML = compositions.map((c, index) => {
+    const check = composeChecks[index];
+    const bad = check && !check.ok;
+    const label = c.note || `订单 ${index + 1}`;
+    return `<button data-o="${index}" class="${index === activeCompose ? "active" : ""}${
+      bad ? " bad" : ""}" data-testid="order-tab-${index + 1}">
+      ${label}（${totalPassengers(c)}人）${bad ? " ⚠" : ""}</button>`;
+  }).join("") + `<button data-o="__add" data-testid="order-tab-add">+ 新建订单</button>`;
+  box.querySelectorAll("button").forEach((button) => {
+    button.onclick = () => {
+      if (button.dataset.o === "__add") { addComposition(); return; }
+      activeCompose = Number(button.dataset.o);
+      renderComposer();
+    };
+  });
+}
+
+function renderOrderSummary() {
+  const c = compositions[activeCompose];
+  const check = composeChecks[activeCompose];
+  const total = totalPassengers(c);
+  const blocked = activeCompose in blockedIndexes();
+  const errors = check ? check.errors : [];
+  const sum = `
+    <div class="csum-row">
+      <span class="csum-item">总人数 <b>${total}</b></span>
+      <span class="csum-item">成人 <b>${c.base.adult || 0}</b></span>
+      <span class="csum-item">青少年 <b>${c.base.youth || 0}</b></span>
+      <span class="csum-item">儿童 <b>${c.base.child || 0}</b></span>
+      <span class="csum-item">幼儿 <b>${c.base.toddler || 0}</b></span>
+      <span class="csum-item">婴儿 <b>${c.base.infant || 0}</b></span>
+      <span class="csum-item" style="color:#7b8794">可用健康成人 <b>${healthyAdults(c)}</b></span>
+      <span class="csum-item" style="color:#7b8794">所需陪同 <b>${requiredCompanions(c)}</b></span>
+    </div>
+    <div class="csum-formula">
+      总人数 = 成人 + 青少年 + 儿童 + 幼儿 + 婴儿 = ${total}
+      ｜ 儿童细分 ${(c.child_sub.child_quiet || 0) + (c.child_sub.child_noisy || 0)}、
+        残疾 ${composeSchema.disability_levels.reduce((s, l) => s + levelCount(c, l.id), 0)}、
+        孕妇 ${composeSchema.pregnant_stages.reduce((s, st) => s + stageCount(c, st.id), 0)}
+        <b>均不计入总人数</b>
+    </div>`;
+  let feedback = "";
+  if (errors.length) {
+    feedback = `<div class="cerr" data-testid="order-errors"><b>不予出票</b><br>${
+      errors.map((e) => `· ${e}`).join("<br>")}</div>`;
+  } else if (check) {
+    const warns = (check.warnings || []).map((w) => `· ${w}`).join("<br>");
+    feedback = `<div class="cok" data-testid="order-ok">
+      校验通过 —— 可以出票${blocked ? "" : ""}</div>`
+      + (warns ? `<div class="cwarn">${warns}</div>` : "");
+  }
+  $("orderSummary").innerHTML = sum + feedback;
+}
+
+function blockedIndexes() {
+  const map = {};
+  composeChecks.forEach((check, index) => { if (check && !check.ok) map[index] = true; });
+  return map;
+}
+
+function renderComposer() {
+  if (!compositions.length) {
+    compositions = [emptyComposition("订单 1")];
+    activeCompose = 0;
+  }
+  activeCompose = Math.max(0, Math.min(activeCompose, compositions.length - 1));
+  renderOrderSwitcher();
+  renderBaseGroup();
+  renderChildSubGroup();
+  renderDisabilityGroup();
+  renderPregnantGroup();
+  renderServiceGroup();
+  renderOrderSummary();
+  $("composeStatus").textContent =
+    `共 ${compositions.length} 张订单，合计 ${compositions.reduce(
+      (s, c) => s + totalPassengers(c), 0)} 人`;
+}
+
+async function refreshComposer() {
+  renderComposer();
+  await syncChecks();
+  renderComposer();
+}
+
+async function syncChecks() {
+  try {
+    const result = await api("/api/composition/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orders: compositions, policy: composeSchema.policy || {} }),
+    });
+    composeChecks = result.orders || [];
+  } catch (error) {
+    composeChecks = [];
+  }
+}
+
+function addComposition(note) {
+  compositions.push(emptyComposition(note || `订单 ${compositions.length + 1}`));
+  activeCompose = compositions.length - 1;
+  refreshComposer();
+}
+
+function loadComposeDemo() {
+  compositions = [];
+  // 1) 正常一家：成人2 + 儿童1（安静）
+  let c = emptyComposition("正常一家");
+  c.base.adult = 2; c.base.child = 1; c.child_sub.child_quiet = 1;
+  compositions.push(c);
+  // 2) 婴儿单独 -> 拒票
+  c = emptyComposition("婴儿单独（应拒票）");
+  c.base.infant = 1;
+  compositions.push(c);
+  // 3) 少年独行 -> 通过
+  c = emptyComposition("青少年独行（应通过）");
+  c.base.youth = 1;
+  compositions.push(c);
+  // 4) 重度残疾未约重点旅客 -> 拒票
+  c = emptyComposition("重度残疾·未约重点旅客（应拒票）");
+  c.base.adult = 1; c.base.child = 1; c.disability.severe.child = 1;
+  compositions.push(c);
+  // 5) 重度残疾 + 重点旅客 + 健康成人 -> 通过
+  c = emptyComposition("重度残疾·已约重点旅客（应通过）");
+  c.base.adult = 2; c.base.child = 1; c.disability.severe.child = 1;
+  c.key_passenger_service = true;
+  compositions.push(c);
+  // 6) 成人本身重度残疾 + 儿童重度残疾 -> 可用健康成人 0，拒票
+  c = emptyComposition("照护人自身重度残疾（应拒票）");
+  c.base.adult = 1; c.base.child = 1;
+  c.disability.severe.adult = 1; c.disability.severe.child = 1;
+  c.key_passenger_service = true;
+  compositions.push(c);
+  // 7) 足月孕妇 -> 拒票，加了重点旅客后通过
+  c = emptyComposition("37周以上孕妇（应拒票）");
+  c.base.adult = 2; c.pregnant.term.adult = 1;
+  compositions.push(c);
+  // 8) 老少同行：成人 + 青少年 + 幼儿
+  c = emptyComposition("带幼儿出行");
+  c.base.adult = 1; c.base.toddler = 1; c.base.youth = 1;
+  compositions.push(c);
+  activeCompose = 0;
+  refreshComposer();
+  toast("已载入 8 张示例订单");
+}
+
+async function submitCompositions() {
+  $("btnComposeSubmit").disabled = true;
+  $("composeStatus").textContent = "提交中…";
+  try {
+    const result = await api("/api/composition/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        orders: compositions,
+        policy: composeSchema.policy || {},
+        fill: Number($("cfill").value),
+        seed: 7,
+      }),
+    });
+    composeResult = result;
+    composeChecks = result.orders.map((item) => item.check);
+    renderComposer();
+    renderComposeResult();
+    const s = result.summary;
+    $("composeStatus").textContent =
+      `完成：${s.orders} 张订单，拦下 ${s.blocked_orders} 张，`
+      + `提交 ${s.submitted_orders} 张，出票 ${s.seated_passengers} 人，用时 ${s.wall_ms} ms`;
+    toast("提交完成");
+  } catch (error) {
+    $("composeStatus").textContent = "失败：" + error.message;
+    toast("失败：" + error.message);
+  } finally {
+    $("btnComposeSubmit").disabled = false;
+  }
+}
+
+function renderComposeResult() {
+  const result = composeResult;
+  if (!result) { $("composeResult").innerHTML = ""; return; }
+  const s = result.summary;
+  const blocked = result.blocked || [];
+  const parts = [];
+  parts.push(`<div class="metrics">
+    <div class="metric"><div class="k">订单</div><div class="v">${s.orders}</div></div>
+    <div class="metric"><div class="k">不予出票</div>
+      <div class="v" style="color:${s.blocked_orders ? "var(--bad)" : "var(--ok)"}">${s.blocked_orders}</div></div>
+    <div class="metric"><div class="k">实际提交</div><div class="v">${s.submitted_orders}</div></div>
+    <div class="metric"><div class="k">出票人数</div><div class="v">${s.seated_passengers}</div></div>
+    <div class="metric"><div class="k">候补</div>
+      <div class="v" style="color:${s.waitlisted_passengers ? "var(--warn)" : "var(--ok)"}">${s.waitlisted_passengers}</div></div>
+    <div class="metric"><div class="k">Tier 0</div>
+      <div class="v" style="color:${s.tier0_violations ? "var(--bad)" : "var(--ok)"}">${s.tier0_violations}</div></div>
+  </div>`);
+  if (blocked.length) {
+    parts.push(`<div class="unmethead" style="margin-top:12px">
+      组单校验未通过（${blocked.length} 张）—— 已拦下，未提交求解</div>`);
+    parts.push(blocked.map((item) => `
+      <div class="blocked-card">
+        <div class="umhead"><b>${item.order_id}</b>
+          <span class="pill impossible">不予出票</span>
+          <span class="tag">${item.total_passengers} 人</span></div>
+        ${item.errors.map((e) => `<div class="umreason">· ${e}</div>`).join("")}
+      </div>`).join(""));
+  }
+  parts.push(`<div class="unmethead" style="margin-top:12px">逐单构成与出票结果</div>`);
+  parts.push(result.orders.map((item) => {
+    const color = ORDER_COLORS[(item.color_index || 0) % ORDER_COLORS.length];
+    const seats = Object.entries(item.seats || {})
+      .map(([pid, sid]) => `${pid.split("-").slice(1).join("-")}@${sid}`).join("　");
+    return `<div class="ticket" style="border-left:4px solid ${item.blocked ? "#e5504a" : color}">
+      <div class="trow">
+        <span class="s" style="font-size:13.5px">${item.order_id}</span>
+        ${item.note ? `<span class="tag">${item.note}</span>` : ""}
+        <span class="tag">总人数 ${item.total_passengers}</span>
+        <span class="tag">${item.level_label}</span>
+      </div>
+      <div class="hint" style="margin-top:4px">${
+        (item.info.names || []).join("、") || "（无乘客）"}</div>
+      ${seats ? `<div class="hint" style="margin-top:3px">${seats}</div>` : ""}
+      ${item.blocked ? `<div class="hint" style="color:#b3352f;margin-top:3px">${
+        (item.check.errors || []).join("；")}</div>` : ""}
+    </div>`;
+  }).join(""));
+  $("composeResult").innerHTML = parts.join("");
+}
+
 /* ---------------- 启动 ---------------- */
 async function boot() {
   $("dateline").textContent = new Date().toLocaleDateString("zh-CN") + " 出发";
@@ -1203,6 +1861,42 @@ async function boot() {
     };
     $("btnDemoOrders").onclick = () => { loadDemoOrders(); toast("已载入示例订单"); };
     $("btnSubmitOrders").onclick = submitOrders;
+
+    // ---- OrderEditor（模块化组单）初始化 ----
+    try {
+      const schema = await api("/api/composition/schema");
+      composeSchema = { ...ZERO_SCHEMA, ...schema };
+      // 用后端下发的清单覆盖前端的硬编码，保证两边语义一致
+      const severe = (composeSchema.disability_levels || [])
+        .filter((item) => item.requires_key_service).map((item) => item.id);
+      if (severe.length) SEVERE_LEVEL_IDS = severe;
+      const term = (composeSchema.pregnant_stages || [])
+        .filter((item) => item.requires_key_service).map((item) => item.id);
+      if (term.length) TERM_STAGE_IDS = term;
+      compositions = [emptyComposition("订单 1")];
+      activeCompose = 0;
+      await syncChecks();
+      renderComposer();
+    } catch (schemaError) {
+      $("composeStatus").textContent = "组单模块未加载：" + schemaError.message;
+    }
+    $("btnComposeSubmit").onclick = submitCompositions;
+    $("btnComposeAdd").onclick = () => addComposition();
+    $("btnComposeDup").onclick = () => {
+      const copy = JSON.parse(JSON.stringify(compositions[activeCompose]));
+      copy.note = `${copy.note || "订单"} 副本`;
+      compositions.push(copy);
+      activeCompose = compositions.length - 1;
+      refreshComposer();
+    };
+    $("btnComposeDemo").onclick = loadComposeDemo;
+    $("btnComposeClear").onclick = () => {
+      compositions = [emptyComposition("订单 1")];
+      activeCompose = 0;
+      composeResult = null;
+      $("composeResult").innerHTML = "";
+      refreshComposer();
+    };
     $("conn").textContent = "后端已连接";
     await resetTrain();
     // 默认给一个三人家庭，方便直接试

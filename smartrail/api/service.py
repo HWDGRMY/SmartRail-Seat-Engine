@@ -594,6 +594,165 @@ def submit_orders(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def submit_compositions(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """按"人员构成"提交多张订单：**先校验，通过才求解**。
+
+    与 :func:`submit_orders` 的区别：那个接受"手工挑乘客"，这个接受
+    "基础分组 + 儿童细分 + 残疾 + 孕妇"的分组计数（见 :mod:`smartrail.composition`）。
+
+    校验不通过的订单**不会被提交给求解器** —— 规格明确要求
+    "重度/极重度残疾 + 未约重点旅客 -> 拒票""婴幼儿 + 成人0 -> 拒票"，
+    这类问题必须在组单阶段就拦住，而不是事后提示。
+
+    每张订单的构成**完全独立**（多订单数据隔离）：校验与展开都只看自己那份。
+    """
+    from ..composition import PlatformPolicy, OrderComposition, composition_schema
+    from ..mapping import build_order
+
+    raw_orders = list(payload.get("orders") or [])
+    if not raw_orders:
+        raise ValueError("orders 不能为空")
+    policy_payload = payload.get("policy") or {}
+    policy = PlatformPolicy(
+        late_pregnancy_requires_key_service=bool(
+            policy_payload.get("late_pregnancy_requires_key_service", False)
+        ),
+        late_pregnancy_requires_companion=bool(
+            policy_payload.get("late_pregnancy_requires_companion", False)
+        ),
+        moderate_cannot_companion=bool(
+            policy_payload.get("moderate_cannot_companion", False)
+        ),
+    )
+
+    compositions = [
+        OrderComposition.from_dict(item, order_id=f"COMP-{index + 1}")
+        for index, item in enumerate(raw_orders)
+    ]
+    # 先跑全部校验，把不通过的挑出来
+    mappings = [build_order(item, policy) for item in compositions]
+    blocked = [
+        {
+            "order_id": mapping.order.order_id,
+            "note": composition.note,
+            "errors": mapping.check.errors,
+            "total_passengers": mapping.total_passengers,
+        }
+        for composition, mapping in zip(compositions, mappings)
+        if not mapping.check.ok
+    ]
+
+    # 只把校验通过的订单交给求解器（**每张订单独立求解、独立占座**）
+    runnable = [
+        item for item, mapping in zip(raw_orders, mappings) if mapping.check.ok
+    ]
+    solved: dict[str, Any] = {}
+    seat_map: dict[str, Any] = {}
+    if runnable:
+        submitted = submit_orders(
+            {
+                "orders": [
+                    {
+                        "order_id": mapping.order.order_id,
+                        "note": composition.note,
+                        "passengers": [
+                            {
+                                "passenger_id": p.passenger_id,
+                                "name": p.name,
+                                "age": p.age,
+                                "ticket_type": p.ticket_type.value,
+                                "support_needs": sorted(n.value for n in p.support_needs),
+                                "declared_behavior": p.declared_behavior.value,
+                                "needs_caregiver": p.needs_caregiver,
+                                "is_caregiver": p.is_caregiver,
+                            }
+                            for p in mapping.order.passengers
+                        ],
+                        "bonds": [
+                            # 键是 frozenset（无序对），先解包再组装
+                            {"a": members[0], "b": members[1], "bond": bond.value}
+                            for members, bond in (
+                                (tuple(pair), bond)
+                                for pair, bond in mapping.order.bonds.items()
+                            )
+                            if len(members) == 2
+                        ],
+                        "bond_mode": "strong",
+                    }
+                    for composition, mapping in zip(compositions, mappings)
+                    if mapping.check.ok
+                ],
+                "fill": payload.get("fill", 0.0),
+                "seed": payload.get("seed", 7),
+            }
+        )
+        solved = {
+            item["order_id"]: item for item in submitted.get("orders", [])
+        }
+        seat_map = submitted
+
+    orders_payload: list[dict[str, Any]] = []
+    for composition, mapping in zip(compositions, mappings):
+        entry = mapping.to_dict()
+        entry["note"] = composition.note
+        entry["blocked"] = not mapping.check.ok
+        result = solved.get(mapping.order.order_id)
+        entry["result"] = result or None
+        if result:
+            entry["seats"] = result.get("seats", {})
+            entry["carriages"] = result.get("carriages", [])
+            entry["level"] = result.get("level")
+            entry["level_label"] = result.get("level_label")
+            entry["color_index"] = result.get("color_index", 0)
+        else:
+            entry["seats"] = {}
+            entry["carriages"] = []
+            entry["level"] = "blocked"
+            entry["level_label"] = "不予出票（组单校验未通过）"
+            entry["color_index"] = 0
+        orders_payload.append(entry)
+
+    total_requested = sum(item["total_passengers"] for item in orders_payload)
+    seated = sum((item["result"] or {}).get("seated", 0) for item in orders_payload)
+    # 被拦下的订单不计入"候补"：它们根本没提交，不是没座位
+    runnable_total = sum(
+        item["total_passengers"] for item in orders_payload if not item["blocked"]
+    )
+    return {
+        "orders": orders_payload,
+        "blocked": blocked,
+        "blocked_count": len(blocked),
+        "summary": {
+            "orders": len(orders_payload),
+            "blocked_orders": len(blocked),
+            "submitted_orders": len(orders_payload) - len(blocked),
+            "requested_passengers": total_requested,
+            "submitted_passengers": runnable_total,
+            "seated_passengers": seated,
+            "waitlisted_passengers": max(0, runnable_total - seated),
+            "tier0_violations": sum(
+                (item["result"] or {}).get("tier0", 0) for item in orders_payload
+            ),
+            "wall_ms": float((seat_map or {}).get("summary", {}).get("wall_ms", 0.0)),
+        },
+        "unmet_orders": [
+            {
+                "order_id": item["order_id"],
+                "level": item["level"],
+                "level_label": item["level_label"],
+                "reasons": (item["result"] or {}).get("reasons", [])
+                or item["check"]["errors"],
+            }
+            for item in orders_payload
+            if item["level"] != "fulfilled"
+        ],
+        "confirmations": (seat_map or {}).get("confirmations", []),
+        "train": (seat_map or {}).get("train") or {},
+        "seat_owner": (seat_map or {}).get("seat_owner", {}),
+        "schema": composition_schema(policy),
+    }
+
+
 def concurrent_simulation(payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """并发订单模拟：把"任意数量 × 任意人群类型"的订单一次性压给引擎。
 

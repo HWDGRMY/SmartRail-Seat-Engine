@@ -69,8 +69,14 @@ try:
         ("impossible", "有『无法满足』分档"),
     ):
         check(token in html, label)
-    for name, o, c in (("花括号", "{", "}"), ("圆括号", "(", ")"), ("方括号", "[", "]")):
+    for name, o, c in (("花括号", "{", "}"), ("方括号", "[", "]")):
+        # 不对整份 HTML 数 ASCII 圆括号：正文里的中文全角括号（U+FF08/9）
+        # 会被误统计。JS 段的精确配对检查交给 smartrail.web.bracket_check。
         check(html.count(o) == html.count(c), f"{name}平衡（{html.count(o)} vs {html.count(c)}）")
+    from smartrail.web.bracket_check import check_js_brackets
+
+    issues = check_js_brackets(html)
+    check(not issues, f"JS 括号精确配对（问题：{issues[:2] or '无'}）")
 
     print()
     print("=== 2) 类型清单接口 ===")

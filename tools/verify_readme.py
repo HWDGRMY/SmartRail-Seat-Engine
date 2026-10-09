@@ -84,7 +84,10 @@ note(bool(claimed), f"README 声明了断言总数：{claimed}")
 if claimed:
     note(int(claimed[0]) == count,
          f"声明 {claimed[0]} 条 vs 实测 {count} 条")
-note("74 条断言" in readme, "承诺章节标题写明 74 条")
+    # 由声明值反查标题，而不是把数字写死在检查脚本里 ——
+    # 写死会在每次新增断言后变成假失败（本脚本已踩过一次）。
+    note(f"## 🛡️ 底线承诺（由 {claimed[0]} 条断言守护）" in readme,
+         f"承诺章节标题与声明一致（{claimed[0]} 条）")
 
 print()
 print("=== 4) 目录结构数字声明 ===")

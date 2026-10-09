@@ -25,15 +25,18 @@ FATAL:mojo\public\cpp\platform\platform_channel.cc: Check failed: . : 拒绝访�
 | :--- | :--- | :--- |
 | `draw_simulation.py` | 画"按类型批量生成订单"的结果（座位图按订单着色） | `docs/screenshots/concurrent-simulation.png` |
 | `draw_order_submission.py` | 画"批量提交订单"的结果（含需确认例外与现场处理） | `docs/screenshots/order-submission.png` |
+| `draw_composer.py` | 画 OrderEditor（人员构成组单）的校验与出票结果 | `docs/screenshots/order-editor.png` |
 | `draw_ticket_first.py` | 画出票优先策略的 6 个场景对比 | `docs/screenshots/ticket-first.png` |
-| `verify_order_page.py` | 页面级验收（自带服务，跑真实 HTTP + 真实 HTML） | 控制台结论 |
+| `verify_order_page.py` | 批量提交页的页面级验收（自带服务） | 控制台结论 |
+| `verify_composer.py` | OrderEditor 的页面级验收（自带服务） | 控制台结论 |
 | `verify_readme.py` | **校验 README 里的可核查声明**（路径、断言数、文件数） | 控制台结论 |
+| `verify_goal.py` | 目标总验收（读 GitHub API 独立核验） | 控制台结论 |
 | `count_files.py` | 统计各目录的文件数/行数（写文档时取数用） | 控制台结论 |
 | `repo_overview.py` | 总览提交内容，确认"该提交的提交、该忽略的忽略" | 控制台结论 |
 
 ## 用法
 
-前三个脚本需要**后端在跑**（它们调用真实接口）：
+前四个脚本需要**后端在跑**（它们调用真实接口）：
 
 ```bash
 # 另开一个终端启动后端
@@ -45,13 +48,15 @@ python tools/draw_simulation.py --fill 0.6            # 六成上座率起售
 python tools/draw_simulation.py --counts adult=6 child=2 wheelchair=1
 python tools/draw_order_submission.py                 # 内置示例（含 1 张不可行订单）
 python tools/draw_order_submission.py --orders my.json
+python tools/draw_composer.py                         # 人员构成组单（8 张示例）
 python tools/draw_ticket_first.py
 ```
 
 页面验收脚本**不需要**手动启动后端（它自己起一个随机端口的服务）：
 
 ```bash
-python tools/verify_order_page.py
+python tools/verify_order_page.py     # 批量提交页
+python tools/verify_composer.py       # OrderEditor（人员构成组单）
 ```
 
 文档与仓库自检脚本**完全离线**（不连网、不起服务）：
