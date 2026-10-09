@@ -218,9 +218,52 @@ for path, name in (("/booking", "批量提交 + OrderEditor"),
     check(status == 200, f"{path} 仍可访问（{name}）")
 
 print()
+print("=== 目标 13：轮椅固定停放位（独立资源，不占座位票额）===")
+status, snap = call("/api/dev/snapshot")
+bays = snap["wheelchair_bays"]
+check(bays["total"] == 4, f"全列 4 个停放位（{bays['total']}）")
+check(bays["free"] == 4, f"重置后 4 个全空（{bays['free']}）")
+cars = {c["number"]: c for c in snap["carriages"]}
+check(cars[4]["wheelchair_bays"] == 2 and cars[12]["wheelchair_bays"] == 2,
+      f"04/12 车各 2 个（{cars[4]['wheelchair_bays']}/{cars[12]['wheelchair_bays']}）")
+check(cars[4]["total"] == 78 and cars[12]["total"] == 78,
+      f"停放位不占座位票额：04/12 车仍是 78 座"
+      f"（{cars[4]['total']}/{cars[12]['total']}）")
+marked = {s["seat_id"] for s in snap["seats"] if s.get("wheelchair_bay")}
+check(len(marked) == 4, f"座位图标出 4 个停放位（{sorted(marked)}）")
+check(sum(snap["remaining"].values()) == 1238,
+      f"全列余票仍按 1238 座计（{sum(snap['remaining'].values())}）")
+
+# 轮椅旅客优先分配停放位；4 个满位后询问并出普通坐票
+call("/api/dev/reset", {"passengers": True})
+status, pax_all = call("/api/passengers")
+wheel_id = next(p["profile_id"] for p in pax_all["passengers"]
+                if p["type_id"] == "wheelchair")
+bay_slots = sorted(marked)
+for index in range(1, 5):
+    status, body = call("/api/tickets/book",
+                        {"class_code": "二等座", "profile_ids": [wheel_id],
+                         "order_id": f"BAY{index}"})
+    seat_id = body["order"]["passengers"][0]["seat_id"]
+    check(seat_id in bay_slots,
+          f"第 {index} 张轮椅单落在停放位（{seat_id}）")
+status, verdict = call("/api/trains/evaluate",
+                       {"class_code": "二等座", "profile_ids": [wheel_id]})
+wc = verdict["wheelchair"]
+check(wc["needs_confirmation"], "4 个满位后给出询问")
+check("普通坐票" in wc["question"], f"询问里说明改出普通坐票")
+status, body = call("/api/tickets/book",
+                    {"class_code": "二等座", "profile_ids": [wheel_id],
+                     "order_id": "BAY5"})
+check(status == 200 and body["ok"], "询问后仍照常出票（不静默拒票）")
+check(body["order"]["passengers"][0]["seat_id"] not in bay_slots,
+      "第 5 张发的是普通座位")
+call("/api/dev/reset", {"passengers": True})
+
+print()
 if problems:
     print(f"失败 {len(problems)} 项：")
     for item in problems:
         print("  -", item)
     raise SystemExit(1)
-print("本轮目标 12 项逐条验收全部通过。")
+print("本轮目标 13 项逐条验收全部通过。")
