@@ -350,6 +350,82 @@ def test_same_order_sits_in_one_row_when_possible() -> None:
         check(True, "余票 40 时仍坐同一排（更好）")
 
 
+def test_key_service_and_companion_rules() -> None:
+    """重点旅客服务：**始终必须**；成人陪同：**只在独自出行时必须**。
+
+    真实反馈（用户）："啥必须啊？单人必须，有陪就不必须了呗，
+    而且你这也没有重点旅客选项啊。"
+
+    核实两件事都错了：
+
+    * 规则写成"每位重度残疾人都要配 1 名成人"（``usable < severe``），
+      而**完全不看有没有同行人** —— "足月孕妇 1 人 + 家人 1 人"照样被拒，
+      理由却是"必须至少 1 名成人陪同"，用户无法理解；
+    * 界面上**根本没有"预约重点旅客服务"这个选项**，可它是硬性前提，
+      于是用户点提交只会看到"必须预约重点旅客服务"却无处可勾。
+
+    现在的口径：
+      * 重度/极重度残疾、足月孕妇 -> 重点旅客服务**始终必须**；
+      * 成人陪同 -> 只有**独自出行**（没有其他成人同行）时才必须；
+      * 界面新增该勾选框，并在构成含重点旅客时**默认勾上**。
+    """
+    print("[构成接口] 重点旅客服务与陪同规则")
+    from smartrail.composition import (
+        OrderComposition, PlatformPolicy, check_composition,
+    )
+
+    def build(adult=0, severe=0, term=0, service=False):
+        c = OrderComposition()
+        c.base["adult"] = adult
+        if severe:
+            c.disability["severe"]["adult"] = severe
+        if term:
+            c.pregnant["term"]["adult"] = term
+        c.key_passenger_service = service
+        return c
+
+    policy = PlatformPolicy()
+    matrix = [
+        # 说明,                   构成,                       期望可出票
+        ("重度 1 独自，未约服务", build(1, severe=1), False),
+        ("重度 1 独自，已约服务", build(1, severe=1, service=True), True),
+        ("重度 1 有家人，未约服务", build(2, severe=1), False),
+        ("重度 1 有家人，已约服务", build(2, severe=1, service=True), True),
+        ("重度 2 + 2 家人，已约服务",
+         build(4, severe=2, service=True), True),
+        ("足月孕妇 1 独自，未约服务", build(1, term=1), False),
+        ("足月孕妇 1 独自，已约服务",
+         build(1, term=1, service=True), True),
+        ("足月孕妇 1 有家人，已约服务",
+         build(2, term=1, service=True), True),
+        ("无重点旅客，未约服务", build(2), True),
+    ]
+    for label, composition, expect_ok in matrix:
+        outcome = check_composition(composition, policy)
+        check(outcome.ok == expect_ok,
+              f"{label} -> {'可出票' if outcome.ok else '拦截'}"
+              f"（{outcome.errors[0][:26] if outcome.errors else '—'}）")
+
+    # "有陪就不必须"：同样的重度残疾人，加了家人就从被拒变通过
+    solo = check_composition(build(1, severe=1, service=True), policy)
+    with_family = check_composition(build(2, severe=1, service=True), policy)
+    check(solo.ok and with_family.ok,
+          "约了重点服务后，独自出行与有人陪同都可出票"
+          "（陪同不再是硬性门槛）")
+
+    # 原有的拒票规则不能被削弱
+    minor = check_composition(_comp_with_child(), policy)
+    check(not minor.ok, "未满 14 岁无成人陪同仍然拒票（原有底线未破）")
+
+
+def _comp_with_child():
+    from smartrail.composition import OrderComposition
+
+    c = OrderComposition()
+    c.base["child"] = 1
+    return c
+
+
 def main() -> int:
     tests = [
         test_blocked_orders_are_not_submitted,
@@ -359,6 +435,7 @@ def main() -> int:
         test_class_code_reaches_the_solver,
         test_composition_respects_ledger_inventory,
         test_same_order_sits_in_one_row_when_possible,
+        test_key_service_and_companion_rules,
         test_schema_returned,
     ]
     if UNDER_PYTEST:

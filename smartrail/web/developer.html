@@ -270,6 +270,19 @@
             </div>
           </div>
 
+          <!-- 重点旅客服务：重度/极重度残疾与足月孕妇**必须**预约，
+               但界面上一开始根本没有这个选项 —— 用户点提交只会看到
+               "必须预约重点旅客服务"却无处可勾。 -->
+          <div class="row" id="serviceRow"
+            style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">
+            <label style="display:flex;align-items:center;gap:7px;font-size:12.5px;
+              cursor:pointer">
+              <input type="checkbox" id="chkKeyService" data-testid="key-service">
+              <b>预约重点旅客服务</b>
+              <span class="hint" id="serviceHint"></span>
+            </label>
+          </div>
+
           <div id="orderResult" style="margin-top:10px"></div>
         </div>
       </div>
@@ -579,6 +592,8 @@ function updateTotalHint() {
   const extra = specialPeople();
   $("totalHint").textContent = `共 ${total} 人`
     + (extra ? `（其中 ${extra} 位标注了特殊人群，不计入总人数）` : "");
+  // 构成一变，重点旅客服务的默认值跟着变
+  syncServiceDefault();
 }
 
 function stepper(label, desc, value, onChange, testid, extraClass = "") {
@@ -745,7 +760,51 @@ function buildComposition() {
     child_sub: { ...childSubCounts },
     disability,
     pregnant,
+    key_passenger_service: $("chkKeyService").checked,
   };
+}
+
+/** 需要重点旅客服务的人数（重度/极重度残疾 + 足月孕妇）。 */
+function keyServiceNeed() {
+  if (!compositionSchema) return 0;
+  const severe = (compositionSchema.disability_levels || [])
+    .filter((lv) => lv.requires_key_service)
+    .reduce((sum, lv) => sum + (compositionSchema.age_bands || [])
+      .reduce((s, band) => s + (disabilityCounts[`${lv.id}|${band.id}`] || 0), 0), 0);
+  const term = (compositionSchema.pregnant_stages || [])
+    .filter((st) => st.requires_key_service)
+    .reduce((sum, st) => sum + (compositionSchema.age_bands || [])
+      .reduce((s, band) => s + (pregnantCounts[`${st.id}|${band.id}`] || 0), 0), 0);
+  return severe + term;
+}
+
+/** 按当前构成自动给出重点旅客服务的默认值。
+ *
+ * 需求口径："既然强制，你就默认给独立出行重度残疾人加上呗"。
+ * 所以只要构成里有需要重点服务的人（重度/极重度残疾、足月孕妇），
+ * 就自动勾上 —— 用户不需要知道有这么个勾选框才能提交成功。
+ * 用户手动改过之后（touched）就不再自动覆盖。
+ */
+let serviceTouched = false;
+
+function syncServiceDefault() {
+  const box = $("chkKeyService");
+  if (!box) return;
+  const need = keyServiceNeed();
+  if (!serviceTouched) {
+    box.checked = need > 0;
+  }
+  const hint = $("serviceHint");
+  if (hint) {
+    const adultCount = baseCounts.adult || 0;
+    if (need > 0) {
+      hint.textContent = adultCount > 0
+        ? `（${need} 位需重点服务；有 ${adultCount} 位成人同行，不强制另配陪同）`
+        : `（${need} 位需重点服务；独自出行，须有同行成人）`;
+    } else {
+      hint.textContent = "（可选：轮椅、担架、导盲犬等站车协助）";
+    }
+  }
 }
 
 async function submitOrder() {
@@ -851,6 +910,10 @@ async function boot() {
   $("btnSpecialToggle").onclick = () => {
     const open = $("specialBox").classList.toggle("on");
     $("btnSpecialToggle").textContent = open ? "收起 ▴" : "展开 ▾";
+  };
+  $("chkKeyService").onchange = () => {
+    serviceTouched = true;   // 用户手动改过，之后不再自动覆盖
+    syncServiceDefault();
   };
   $("btnReset").onclick = async () => {
     if (!confirm("重置系统：清空所有订单与座位占用，乘车人恢复预制状态。继续？")) return;

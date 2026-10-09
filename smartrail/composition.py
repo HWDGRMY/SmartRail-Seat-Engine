@@ -382,18 +382,36 @@ def validate_group_consistency(
 def validate_disability(
     composition: OrderComposition, policy: PlatformPolicy | None = None
 ) -> str | None:
-    """重度／极重度残疾必须预约重点旅客，且每位至少 1 名成人陪同。"""
+    """重度／极重度残疾：**必须预约重点旅客服务**；**独立出行**时才必须有陪同。
+
+    原先的写法是"每位重度残疾人都要配 1 名成人"（``usable < severe``），
+    而且**完全不看有没有同行人**：
+
+    * 1 位重度残疾人 + 3 位家人 -> 因为"可用健康成人 3 < 重度 1"？不会，
+      但 "1 位重度残疾人 + 0 位家人 + 登记重点服务" 仍被拒，
+      理由写成"必须至少 1 名成人陪同" —— 可需求里从没要求残疾人必须有陪同，
+      只要求**独立出行**的重度残疾人由站车协助；
+    * 更荒谬的是"2 位重度残疾人 + 2 位家人"也被拒，因为要 2 名成人而
+      可用健康成人算出来是 2 —— 边界正好卡住，用户完全无法理解。
+
+    用户的原话："啥必须啊？单人必须，有陪就不必须了呗。"
+    所以改成：
+
+    * 重点旅客服务：**始终必须**（重度/极重度由站车协助）；
+    * 成人陪同：只在**没有任何其他成人同行**时才必须
+      （即"独自出行"）；有同行人就不强制。
+    """
     policy = policy or PlatformPolicy()
     severe = composition.severe_disability_count
     if severe <= 0:
         return None
     if not composition.key_passenger_service:
         return "重度/极重度残疾必须预约重点旅客服务"
-    usable = composition.healthy_adults(policy)
-    if usable < severe:
+    # 有同行成人就不强制陪同；只有"独自出行"才要求。
+    if composition.base["adult"] <= 0:
         return (
-            f"重度/极重度残疾必须至少 {severe} 名成人陪同"
-            f"（当前可用健康成人 {usable} 名）"
+            f"重度/极重度残疾旅客独自出行时必须有同行成人"
+            f"（{severe} 位重点旅客，当前无同行成人）"
         )
     return None
 
@@ -401,17 +419,24 @@ def validate_disability(
 def validate_pregnant(
     composition: OrderComposition, policy: PlatformPolicy | None = None
 ) -> str | None:
-    """10 个月 / 37 周以上孕妇必须预约重点旅客，且至少 1 名成人陪同。"""
+    """10 个月 / 37 周以上孕妇：**必须预约重点旅客**；**独自出行**时才必须有陪同。
+
+    与 :func:`validate_disability` 同一口径 —— 原先写成
+    "每位足月孕妇都要配 1 名成人"（``usable < term``），
+    可孕妇本人就在基础分组的成人里，于是"足月孕妇 1 人 + 家人 0 人"
+    与"足月孕妇 1 人 + 家人 1 人"算出来的可用健康成人数经常一样，
+    用户看到的就是"明明有人陪还被拒"。
+    """
     policy = policy or PlatformPolicy()
     term = composition.term_pregnancy_count
     if term > 0:
         if not composition.key_passenger_service:
             return "10个月/37周以上孕妇必须预约重点旅客服务"
-        usable = composition.healthy_adults(policy)
-        if usable < term:
+        # 有同行成人就不强制陪同；只有独自出行才要求。
+        if composition.base["adult"] <= 0:
             return (
-                f"10个月/37周以上孕妇必须至少 {term} 名成人陪同"
-                f"（当前可用健康成人 {usable} 名）"
+                f"10个月/37周以上孕妇独自出行时必须有同行成人"
+                f"（{term} 位重点旅客，当前无同行成人）"
             )
         return None
     if policy.late_pregnancy_requires_key_service:

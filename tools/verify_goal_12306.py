@@ -417,6 +417,50 @@ check(same_row >= trials // 2,
       f"（修复前 0/{trials}，要求 ≥ {trials // 2}）")
 
 print()
+print("=== 目标 12e5：重点旅客服务与陪同规则 ===")
+# 用户原话："啥必须啊？单人必须，有陪就不必须了呗，
+#           而且你这也没有重点旅客选项啊。"
+# 两处都错：规则不看同行人；界面没有该勾选框（可它是硬前提）。
+bands_list = [b["id"] for b in schema["age_bands"]]
+
+
+def _svc(adult=0, severe=0, term=0, service=False):
+    disability = {lv["id"]: {b: 0 for b in bands_list}
+                  for lv in schema["disability_levels"]}
+    pregnant = {st["id"]: {b: 0 for b in bands_list}
+                for st in schema["pregnant_stages"]}
+    if severe:
+        disability["severe"]["adult"] = severe
+    if term:
+        pregnant["term"]["adult"] = term
+    return {
+        "class_code": "二等座",
+        "base": {"adult": adult, "youth": 0, "child": 0,
+                 "toddler": 0, "infant": 0},
+        "child_sub": {g["id"]: 0 for g in schema["child_sub_groups"]},
+        "disability": disability,
+        "pregnant": pregnant,
+        "key_passenger_service": service,
+    }
+
+
+for label, composed, expect_ok in (
+    ("重度 1 独自，未约服务", _svc(1, severe=1), False),
+    ("重度 1 独自，已约服务", _svc(1, severe=1, service=True), True),
+    ("重度 1 有家人，未约服务", _svc(2, severe=1), False),
+    ("重度 1 有家人，已约服务", _svc(2, severe=1, service=True), True),
+    ("足月孕妇 1 独自，已约服务", _svc(1, term=1, service=True), True),
+    ("足月孕妇 1 有家人，已约服务", _svc(2, term=1, service=True), True),
+    ("无重点旅客，未约服务", _svc(2), True),
+):
+    style, body = call("/api/composition/submit", {"orders": [composed]})
+    blocked_now = bool(body.get("blocked"))
+    check(blocked_now != expect_ok,
+          f"{label} -> {'可出票' if not blocked_now else '拦截'}")
+
+check("chkKeyService" in dev_html, "开发者页含『预约重点旅客服务』勾选框")
+
+print()
 print("=== 目标 12f：开发者提交的订单必须被保留 ===")
 # 需求："开发者提交的订单难道不用保留吗" —— 原先这条路径完全没记录。
 call("/api/dev/reset", {"passengers": True})
