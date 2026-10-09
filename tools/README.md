@@ -56,6 +56,7 @@ FATAL:mojo\public\cpp\platform\platform_channel.cc: Check failed: . : 拒绝访�
 | `draw_composer_ui.py` | 画 OrderEditor 的**组件布局**（分组控件本身） | `docs/screenshots/order-editor-ui.png` |
 | `draw_wheelchair.py` | 画轮椅固定停放位的**独立编号**与"询问后出票"流程 | `docs/screenshots/wheelchair-bays.png` |
 | `draw_fragmentation.py` | 画"按顺序占 vs 打散占"的余票格局差异（为何压测不能按顺序占） | `docs/screenshots/fragmentation.png` |
+| `draw_page_changes.py` | 画 `/dev` 的提交订单面板与 `/ticket` 的两层人群选择 | `docs/screenshots/page-changes.png` |
 | `draw_ticket_first.py` | 画出票优先策略的 6 个场景对比 | `docs/screenshots/ticket-first.png` |
 | `verify_order_api.py` | 批量提交**接口**级验收（自带服务、打真实接口） | 控制台结论 |
 | `check_page_js.py` | **在 Node 里真跑页面 JS**：启动、按钮绑定、逐个点击 | 控制台结论 |
@@ -85,6 +86,7 @@ python tools/draw_composer.py                         # 人员构成组单（8 �
 python tools/draw_composer_ui.py                      # 组单界面的组件布局
 python tools/draw_wheelchair.py                       # 轮椅停放位独立编号
 python tools/draw_fragmentation.py                    # 压测占位方式对比
+python tools/draw_page_changes.py                     # 开发者页下单面板 + 两层人群选择
 python tools/draw_ticket_first.py
 ```
 
