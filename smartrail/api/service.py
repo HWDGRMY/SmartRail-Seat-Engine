@@ -626,8 +626,19 @@ def submit_compositions(payload: Mapping[str, Any]) -> dict[str, Any]:
         ),
     )
 
+    # 订单号：调用方给了就用，否则按**台账已有的单数**续号。
+    #
+    # 早期无条件用 ``COMP-{index+1}``，于是每次提交都是 COMP-1 ——
+    # 台账里三张不同的订单全叫 COMP-1，记录无法区分（实测抓到的）。
+    from ..ticketing import get_dev_store as _dev_store
+
+    existing = len(_dev_store().orders)
     compositions = [
-        OrderComposition.from_dict(item, order_id=f"COMP-{index + 1}")
+        OrderComposition.from_dict(
+            item,
+            order_id=str(item.get("order_id") or "")
+            or f"COMP-{existing + index + 1}",
+        )
         for index, item in enumerate(raw_orders)
     ]
     # 先跑全部校验，把不通过的挑出来
@@ -719,6 +730,17 @@ def submit_compositions(payload: Mapping[str, Any]) -> dict[str, Any]:
     runnable_total = sum(
         item["total_passengers"] for item in orders_payload if not item["blocked"]
     )
+    # 把已求解的订单**记进开发者台账**。
+    #
+    # 需求："开发者提交的订单难道不用保留吗"。原先这条路径完全没记录 ——
+    # /api/composition/submit 直接把订单交给主引擎，而"用户下单记录"
+    # 读的是开发者台账（devstore.orders），所以开发者在 /dev 提交的订单
+    # 在记录里一条都看不到，刷新还会被覆盖。
+    #
+    # 记的形状与用户模式（booking.py 的 order_record）保持一致，
+    # 这样前端 renderOrders 不用为两种来源写两套渲染。
+    _record_composition_orders(orders_payload, seat_map)
+
     return {
         "orders": orders_payload,
         "blocked": blocked,
@@ -752,6 +774,84 @@ def submit_compositions(payload: Mapping[str, Any]) -> dict[str, Any]:
         "seat_owner": (seat_map or {}).get("seat_owner", {}),
         "schema": composition_schema(policy),
     }
+
+
+def _record_composition_orders(
+    orders_payload: Sequence[Mapping[str, Any]],
+    seat_map: Mapping[str, Any],
+) -> None:
+    """把构成组单的结果写进开发者台账，供"用户下单记录"显示。
+
+    形状刻意与 :func:`smartrail.ticketing.booking.book_ticket_order` 产出的
+    ``order_record`` 一致（order_id / class_code / passengers / rows / split …），
+    这样前端只需要一套渲染逻辑。
+
+    被拦下的订单也记，但标 ``blocked=True`` —— "提交了但没出票"
+    同样是需要保留的记录，否则用户会以为提交丢了。
+    """
+    from ..ticketing import get_dev_store
+
+    store = get_dev_store()
+    owner = seat_map.get("seat_owner") or {}
+    color_of = {
+        seat_id: index for seat_id, index in owner.items()
+    } if all(isinstance(v, int) for v in owner.values()) else {}
+
+    for entry in orders_payload:
+        seats = entry.get("seats") or {}
+        info = entry.get("info") or {}
+        base = info.get("base") or {}
+        passengers = []
+        for item in entry.get("passengers") or []:
+            seat_id = seats.get(item["passenger_id"], "")
+            passengers.append({
+                "passenger_id": item["passenger_id"],
+                "name": item.get("name", ""),
+                "ticket_type": item.get("ticket_type", ""),
+                "seat_id": seat_id,
+                "carriage": 0,
+                "row": 0,
+                "col": "",
+                "class_code": "",
+                "quiet": False,
+                "wheelchair_bay": "",
+            })
+        # 车厢/排号从座位号解析（形如「01车01A」），与用户模式保持同构
+        for payload in passengers:
+            seat_id = payload["seat_id"]
+            if len(seat_id) >= 5 and "车" in seat_id:
+                head, _, tail = seat_id.partition("车")
+                payload["carriage"] = int(head) if head.isdigit() else 0
+                digits = "".join(ch for ch in tail[:2] if ch.isdigit())
+                payload["row"] = int(digits) if digits else 0
+                payload["col"] = tail[-1] if tail else ""
+        base_desc = " + ".join(
+            f"{key}×{value}" for key, value in base.items() if value
+        ) or "无"
+        store.record_order({
+            "order_id": entry.get("order_id", ""),
+            "class_code": entry.get("class_code")
+                          or (entry.get("result") or {}).get("class_code", ""),
+            "source": "dev-composition",
+            "note": entry.get("note", ""),
+            "blocked": bool(entry.get("blocked")),
+            "level": entry.get("level", ""),
+            "level_label": entry.get("level_label", ""),
+            "base_desc": base_desc,
+            "total_passengers": entry.get("total_passengers", 0),
+            "healthy_adults": (entry.get("check") or {}).get("healthy_adults"),
+            "required_companions": (entry.get("check") or {}).get(
+                "required_companions"),
+            "reason": "；".join((entry.get("check") or {}).get("errors") or []),
+            "passengers": passengers,
+            "rows": sorted({
+                f"{p['carriage']:02d}车{p['row']}排"
+                for p in passengers if p["carriage"]
+            }),
+            "seated": len(seats),
+            "split": False,
+            "color_index": entry.get("color_index", 0),
+        })
 
 
 def concurrent_simulation(payload: Mapping[str, Any] | None = None) -> dict[str, Any]:

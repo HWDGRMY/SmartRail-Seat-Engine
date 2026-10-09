@@ -34,6 +34,7 @@ CARD = (255, 255, 255)
 INK = (51, 51, 51)
 MUTED = (123, 135, 148)
 LINE = (233, 237, 242)
+BLUE = (59, 142, 234)
 DARK = (43, 58, 77)
 SOLD = (159, 178, 198)
 PRESET = (201, 212, 224)
@@ -84,6 +85,15 @@ class Canvas:
     def card(self, x, y, w, h, fill=CARD, outline=None):
         self.draw.rounded_rectangle([x, y, x + w, y + h], 9, fill=fill,
                                     outline=outline)
+
+    def button(self, x, y, label, w=26, h=22, fill=(251, 252, 253), fg=INK,
+               bold=False):
+        self.draw.rounded_rectangle([x, y, x + w, y + h], 5, fill=fill,
+                                    outline=LINE)
+        size = font(12, bold)
+        tw = self.draw.textlength(label, font=size)
+        self.draw.text((x + (w - tw) / 2, y + (h - 15) / 2), label,
+                       font=size, fill=fg)
 
 
 def seat_style(seat: dict) -> tuple[tuple[int, int, int], tuple[int, int, int], int]:
@@ -176,25 +186,38 @@ def draw_carriage(canvas, x, y, w, car, seats) -> None:
                     f"… 还有 {car['rows'] - SHOW_ROWS} 排", 10, False, MUTED)
 
 
-def main() -> int:
-    call("/api/dev/reset", {"passengers": True})
-    schema = call("/api/composition/schema")
+def blank_composition(schema: dict, adult: int, child: int = 0,
+                      note: str = "") -> dict:
     bands = [b["id"] for b in schema["age_bands"]]
-    call("/api/composition/submit", {"orders": [{
-        "base": {"adult": 4, "child": 2, "youth": 0, "toddler": 0, "infant": 0},
+    return {
+        "note": note,
+        "base": {"adult": adult, "child": child, "youth": 0,
+                 "toddler": 0, "infant": 0},
         "child_sub": {g["id"]: 0 for g in schema["child_sub_groups"]},
         "disability": {lv["id"]: {b: 0 for b in bands}
                        for lv in schema["disability_levels"]},
         "pregnant": {st["id"]: {b: 0 for b in bands}
                      for st in schema["pregnant_stages"]},
-    }]})
+    }
+
+
+def main() -> int:
+    call("/api/dev/reset", {"passengers": True})
+    schema = call("/api/composition/schema")
+    # 真实提交几张单（含一张会被拦下的），这样"下单记录"有内容可画
+    for payload in (
+        blank_composition(schema, 2, 2, "一家四口"),
+        blank_composition(schema, 0, 1, "无成人陪儿童"),
+        blank_composition(schema, 3, 0, "三成人"),
+    ):
+        call("/api/composition/submit", {"orders": [payload]})
     snapshot = call("/api/dev/snapshot")
     by_car: dict[int, list[dict]] = defaultdict(list)
     for seat in snapshot["seats"]:
         by_car[seat["carriage"]].append(seat)
     cars = snapshot["carriages"]
 
-    canvas = Canvas(W, 1400)
+    canvas = Canvas(W, 2200)
     draw = canvas.draw
     draw.rectangle([0, 0, W, 74], fill=DARK)
     canvas.text(28, 10, "开发者页布局：座位图占满整宽、车厢自动并排", 21, True,
@@ -280,27 +303,141 @@ def main() -> int:
         draw_carriage(canvas, cx, cy, col_w, car, by_car[car["number"]])
     y += card_h + 14
 
-    # ---------- 操作面板（横向铺开） ----------
-    ops = [
+    # ---------- 操作面板：提交订单整行，其余按比例 ----------
+    card_x = 22
+    card_w = W - 44
+
+    # ① 提交订单（整行）
+    ry = y
+    composer_h = 250
+    canvas.card(card_x, ry, card_w, composer_h)
+    canvas.text(card_x + 16, ry + 10, "提交订单", 14, True, INK)
+    canvas.text(card_x + 86, ry + 12,
+                "按基础分组加人数 → 需要时叠加特殊人群 → 提交", 11, False, MUTED)
+    draw.rounded_rectangle([card_x + 16, ry + 34, card_x + 196, ry + 62], 6,
+                           fill=(251, 252, 253), outline=LINE)
+    canvas.text(card_x + 28, ry + 40, "二等座", 12.5, False, INK)
+    canvas.right(card_x + card_w - 16, ry + 40, "共 6 人", 12, True, BLUE)
+    # 基础分组（左）
+    bx = card_x + 16
+    by = ry + 78
+    canvas.text(bx, by, "基础分组", 12.5, True, (59, 74, 90))
+    canvas.text(bx + 66, by + 1, "总人数只由这 5 类决定", 10.5, False, MUTED)
+    by += 20
+    for group in schema["base_groups"]:
+        value = {"adult": 4, "child": 2}.get(group["id"], 0)
+        canvas.text(bx, by, group["label"], 12, True, INK)
+        canvas.text(bx + 58, by + 2, group["desc"], 10, False, MUTED)
+        ctl = bx + 250
+        canvas.button(ctl, by - 2, "−", w=22, h=20,
+                      fg=MUTED if value == 0 else INK)
+        canvas.text(ctl + 28, by, str(value), 12, True, INK)
+        canvas.button(ctl + 52, by - 2, "+", w=22, h=20)
+        by += 28
+    # 特殊人群（右）
+    sx = card_x + 400
+    sy = ry + 78
+    canvas.text(sx, sy, "特殊人群", 12.5, True, (59, 74, 90))
+    canvas.text(sx + 66, sy + 1, "叠加在基础分组之上，不改变总人数",
+                10.5, False, MUTED)
+    canvas.right(card_x + card_w - 16, sy, "展开 ▾", 11, False, MUTED)
+    sy += 22
+    for group in schema["child_sub_groups"]:
+        value = 1 if group["id"] == "child_noisy" else 0
+        canvas.text(sx, sy, group["label"], 11.5, False, INK)
+        canvas.button(sx + 150, sy - 2, "−", w=20, h=19,
+                      fg=MUTED if value == 0 else INK)
+        canvas.text(sx + 174, sy, str(value), 11.5, True, INK)
+        canvas.button(sx + 194, sy - 2, "+", w=20, h=19)
+        sy += 26
+    canvas.text(sx, sy + 2, "残疾旅客 / 孕妇：程度 × 年龄段（展开后设置）",
+                10.5, False, MUTED)
+    y += composer_h + GAP
+
+    # ② 模拟余票 / 快速压测（各占一半；下单记录放在下面的整行明细里，
+    #    避免"下单记录"出现两次）
+    half = (card_w - GAP) // 2
+    panels = [
         ("模拟余票", "调整后实时影响用户模式",
-         ["一等座 10 / 64", "商务座 4 / 22", "二等座 172 / 1152"]),
-        ("提交订单", "按基础分组加人数 → 叠加特殊人群",
-         ["成人 4 · 儿童 2", "总人数 6（叠加维度不计入）"]),
-        ("快速压测", "空车 / 三成 / 六成 / 八成五 / 满座",
-         ["占用按真实售票打散", "最长连座 2 · ≥2 连座 7 处"]),
-        ("用户下单记录", "", ["还没有订单。"]),
+         [f"一等座 {snapshot['remaining'].get('一等座', 0)} / 64",
+          f"商务座 {snapshot['remaining'].get('商务座', 0)} / 22",
+          f"二等座 {snapshot['remaining'].get('二等座', 0)} / 1152"]),
+        ("快速压测", "按真实售票打散占用",
+         ["空车 / 三成 / 六成 / 八成五 / 满座",
+          "碎片化：最长连座 2 · ≥2 连座 7 处"]),
     ]
-    op_w = (W - 44 - GAP * (len(ops) - 1)) // len(ops)
-    op_h = 40 + max(len(lines) for _t, _h, lines in ops) * 18 + 16
-    for index, (title, hint, lines) in enumerate(ops):
-        ox = 22 + index * (op_w + GAP)
-        canvas.card(ox, y, op_w, op_h)
-        canvas.text(ox + 16, y + 10, title, 13.5, True, INK)
+    panel_h = 40 + max(len(p[2]) for p in panels) * 18 + 16
+    for index, (title, hint, lines) in enumerate(panels):
+        px = card_x + index * (half + GAP)
+        canvas.card(px, y, half, panel_h)
+        canvas.text(px + 16, y + 10, title, 13.5, True, INK)
         if hint:
-            canvas.text(ox + 16, y + 28, hint, 10.5, False, MUTED)
+            canvas.text(px + 16, y + 28, hint, 10.5, False, MUTED)
         for li, line in enumerate(lines):
-            canvas.text(ox + 16, y + 48 + li * 18, line, 11.5, False, INK)
-    y += op_h + 16
+            canvas.text(px + 16, y + 48 + li * 18, line[:44], 11.5, False, INK)
+    y += panel_h + GAP
+
+    # ③ 下单记录明细（整行）
+    orders = snapshot["orders"]
+    cards = max(1, (card_w - 24 + 10) // 350)
+    cell_w = (card_w - 24 - 10 * (cards - 1)) // cards
+    per_card = 74
+    rows_needed = max(1, -(-len(orders) // cards)) if orders else 1
+    record_h = 40 + rows_needed * per_card + 14
+    canvas.card(card_x, y, card_w, record_h)
+    canvas.text(card_x + 16, y + 10, "下单记录", 14, True, INK)
+    canvas.text(card_x + 86, y + 12,
+                f"共 {len(orders)} 单 · 含开发者组单与用户模式下单", 11, False,
+                MUTED)
+    if not orders:
+        canvas.text(card_x + 16, y + 42, "还没有订单。", 11.5, False, MUTED)
+    for index, order in enumerate(orders):
+        r, c = divmod(index, cards)
+        ox = card_x + 12 + c * (cell_w + 10)
+        oy = y + 36 + r * per_card
+        blocked = order.get("blocked")
+        draw.rounded_rectangle([ox, oy, ox + cell_w, oy + per_card - 8], 8,
+                               fill=(253, 247, 246) if blocked else (253, 254, 254),
+                               outline=(240, 216, 213) if blocked else LINE)
+        tx = ox + 10
+        canvas.text(tx, oy + 7, order["order_id"], 12, True, INK)
+        tx += int(draw.textlength(order["order_id"], font=font(12, True))) + 10
+        for tag, color in ((order.get("level_label") or "", MUTED),
+                           ("开发者组单" if order.get("source") == "dev-composition"
+                            else "用户下单", (47, 122, 208))):
+            if not tag:
+                continue
+            tw = int(draw.textlength(tag, font=font(10))) + 12
+            draw.rounded_rectangle([tx, oy + 8, tx + tw, oy + 23], 4,
+                                   fill=(238, 244, 253), outline=(216, 231, 250))
+            canvas.text(tx + 6, oy + 10, tag, 10, False, color)
+            tx += tw + 6
+        canvas.right(ox + cell_w - 10, oy + 9,
+                     f"{order['seated']}/{order['total_passengers']} 人就座",
+                     10.5, False, MUTED)
+        ly = oy + 28
+        if order.get("base_desc"):
+            canvas.text(ox + 10, ly, order["base_desc"], 10.5, False, MUTED)
+            ly += 15
+        if order.get("reason"):
+            canvas.text(ox + 10, ly, "未出票：" + order["reason"][:30], 10.5,
+                        False, BAD)
+            ly += 15
+        chips = [f"{p['name']} {p['seat_id'] or '未出票'}"
+                 for p in order.get("passengers", [])][:4]
+        cx = ox + 10
+        for chip in chips:
+            cw = int(draw.textlength(chip, font=font(10))) + 12
+            if cx + cw > ox + cell_w - 10:
+                break
+            fill, edge, fg = ((253, 242, 241), (240, 216, 213), (179, 53, 47)) \
+                if chip.endswith("未出票") else ((238, 244, 253), (216, 231, 250),
+                                                 (47, 122, 208))
+            draw.rounded_rectangle([cx, ly, cx + cw, ly + 15], 4, fill=fill,
+                                   outline=edge)
+            canvas.text(cx + 6, ly + 1, chip, 10, False, fg)
+            cx += cw + 5
+    y += record_h + GAP
 
     # 结论：逐行量宽后再定卡片高度，避免文字压出卡片
     # （第一版写死 96px，第三行被裁掉了）。
@@ -309,8 +446,11 @@ def main() -> int:
         + str(rows_of_cars) + " 行，一屏看完。",
         "② 车厢宽度按 minmax(250px,1fr) 自动计算：实测一行 " + str(cols)
         + f" 节、列宽 {col_w}px；座位网格用 width:max-content，只占 159px 不摊开。",
-        "③ 操作面板（余票 / 组单 / 压测 / 订单）从 440px 侧栏改为横向铺开在座位图下方。",
-        "④ 车厢头一行改为可收缩：车型说明过长时省略号，不再压到右侧「定员／余」。",
+        "③ 提交订单面板占整行：基础分组与特殊人群并排，"
+        "年龄段用 minmax(128px,1fr) 网格自动排齐。",
+        "④ 【新】开发者提交的订单会记进台账 —— 原先这条路径完全没记录，"
+        "「下单记录」永远是空的。",
+        "⑤ 【新】订单号按台账已有单数续号：原先每次都是 COMP-1，三张不同的单同名。",
     ]
     box_h = 36 + len(lines) * 19 + 12
     canvas.card(22, y, W - 44, box_h, fill=(240, 251, 244),

@@ -136,15 +136,46 @@
   .ssection{padding:8px 0 4px;border-top:1px dashed var(--line)}
   .ssection .stitle{font-size:12px;font-weight:600;color:#4a5a6a;
     margin-bottom:5px;display:flex;gap:8px;align-items:baseline}
-  /* 特殊人群每行：名称 + 说明一行，年龄段换到第二行，不再挤成一列 */
-  .stepper.wide{grid-template-columns:1fr;gap:4px}
-  /* 操作面板横向铺开（原先挤在 440px 侧栏里，把座位图压到 1080px），
-     座位图因此能占满整宽、并排 4 节车厢。 */
+  /* 特殊人群每行：标题一行，年龄段控件网格排在下方。
+     用 grid 而不是 flex，5 个年龄段在宽面板里自动排齐、窄时不溢出。 */
+  .stepper.wide{grid-template-columns:1fr;gap:6px;padding:7px 0}
+  .bandgrid{display:grid;gap:5px;
+    grid-template-columns:repeat(auto-fit,minmax(128px,1fr))}
+  /* 操作面板：提交订单占整行（里面有 5 个基础分组步进器 + 孕妇/残疾的
+     "程度 × 年龄段"矩阵，需要宽度），其余按比例排在其下。
+     用 grid 的 span 控制，避免某一列被压窄后标签换行、右侧留死白。 */
   .opgrid{display:grid;gap:14px;align-items:start;
-    grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
+    grid-template-columns:repeat(6,minmax(0,1fr))}
   .opgrid > .card{margin-bottom:0}
-  .opgrid .card.wide2{grid-column:span 2}
-  @media (max-width:900px){.opgrid .card.wide2{grid-column:span 1}}
+  .opgrid .card.span2{grid-column:span 2}
+  .opgrid .card.span6{grid-column:span 6}
+  @media (max-width:1200px){
+    .opgrid{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .opgrid .card.span2{grid-column:span 1}
+    .opgrid .card.span6{grid-column:span 2}
+  }
+  @media (max-width:760px){
+    .opgrid{grid-template-columns:1fr}
+    .opgrid .card.span2,.opgrid .card.span6{grid-column:span 1}
+  }
+  /* 提交订单面板内部：基础分组与特殊人群并排，宽屏时不会一边空一边挤。 */
+  .composer{display:grid;grid-template-columns:minmax(240px,300px) minmax(0,1fr);
+    gap:20px;align-items:start}
+  @media (max-width:900px){.composer{grid-template-columns:1fr}}
+  /* ---- 下单记录 ---- */
+  .ordergrid{display:grid;gap:10px;
+    grid-template-columns:repeat(auto-fill,minmax(340px,1fr))}
+  .ordercard{border:1px solid var(--line);border-radius:8px;padding:9px 11px;
+    background:#fdfefe}
+  .ordercard.blocked{background:#fdf7f6;border-color:#f0d8d5}
+  .orderhead{display:flex;align-items:center;gap:7px;flex-wrap:wrap;
+    margin-bottom:6px}
+  .orderhead b{font-size:13px}
+  .orderhead .hint{margin-left:auto;font-size:11px}
+  .orderseats{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+  .seatchip{font-size:11px;padding:1px 7px;border-radius:4px;
+    background:#eef4fd;color:var(--blue-d);border:1px solid #d8e7fa}
+  .seatchip.none{background:#fdf2f1;color:#b3352f;border-color:#f0d8d5}
   /* 提交结果里的乘客行 */
   .paxrow{display:flex;align-items:center;gap:8px;font-size:12.5px;
     padding:3px 0;border-bottom:1px dashed var(--line)}
@@ -204,49 +235,52 @@
   </div>
 
   <div class="opgrid">
-      <!-- 模拟余票 -->
-      <div class="card">
-        <h2>模拟余票 <span class="hint">调整后实时影响用户模式</span></h2>
-        <div class="body" id="sliders"></div>
-      </div>
-      <!-- 提交订单：按**基础分组人数**组单。
-           需求："我需要添加任意数量的成人什么的" —— 所以这里是
-           加减数量的步进器，而不是勾选姓名（人名在这里没有意义）。
+      <!-- 提交订单：按**基础分组人数**组单。占整行 —— 里面有 5 个基础分组
+           步进器与孕妇/残疾的"程度 × 年龄段"矩阵，需要宽度才不挤。
 
            口径：**基础分组管总人数**（成人/青少年/儿童/幼儿/婴儿），
            特殊人群（残疾/孕妇/儿童细分）是在基础分组上叠加的**独立维度**，
            不改变总人数 —— 与 smartrail/composition.py 完全一致。 -->
-      <div class="card">
+      <div class="card span6">
         <h2>提交订单 <span class="hint">按基础分组加人数 → 需要时叠加特殊人群 → 提交</span></h2>
         <div class="body">
-          <div class="row" style="margin-bottom:8px">
+          <div class="row" style="margin-bottom:10px">
             <label class="hint" style="width:52px">席别</label>
-            <select id="orderClass" style="flex:1;padding:5px 8px;border:1px solid var(--line);
-              border-radius:6px;font-family:inherit;font-size:13px"></select>
+            <select id="orderClass" style="width:180px;padding:5px 8px;
+              border:1px solid var(--line);border-radius:6px;
+              font-family:inherit;font-size:13px"></select>
             <button class="btn ghost small" id="btnPickNone">清空</button>
-          </div>
-
-          <div class="grouptitle">基础分组
-            <span class="hint" id="totalHint">共 0 人</span></div>
-          <div id="baseGroups" class="steppers"></div>
-
-          <div class="grouptitle" style="margin-top:10px">
-            特殊人群<span class="hint">叠加在基础分组之上，不改变总人数</span>
-            <button class="btn ghost small" id="btnSpecialToggle"
-              style="margin-left:auto">展开 ▾</button></div>
-          <div id="specialBox" class="specialbox"></div>
-
-          <div class="row" style="margin-top:12px">
+            <span class="hint" id="totalHint" style="margin-left:auto">共 0 人</span>
             <button class="btn" id="btnSubmitOrder" data-testid="submit-order">
               提交订单</button>
-            <span class="hint">同一订单默认坐一起；凑不出连座时自动分票</span>
           </div>
+
+          <div class="composer">
+            <div>
+              <div class="grouptitle">基础分组
+                <span class="hint">总人数只由这 5 类决定</span></div>
+              <div id="baseGroups" class="steppers"></div>
+            </div>
+            <div>
+              <div class="grouptitle">
+                特殊人群<span class="hint">叠加在基础分组之上，不改变总人数</span>
+                <button class="btn ghost small" id="btnSpecialToggle"
+                  style="margin-left:auto">展开 ▾</button></div>
+              <div id="specialBox" class="specialbox"></div>
+            </div>
+          </div>
+
           <div id="orderResult" style="margin-top:10px"></div>
         </div>
       </div>
+      <!-- 模拟余票 -->
+      <div class="card span2">
+        <h2>模拟余票 <span class="hint">调整后实时影响用户模式</span></h2>
+        <div class="body" id="sliders"></div>
+      </div>
       <!-- 快速压测 -->
-      <div class="card">
-        <h2>快速压测</h2>
+      <div class="card span2">
+        <h2>快速压测 <span class="hint">按真实售票打散占用</span></h2>
         <div class="body">
           <div class="row">
             <button class="btn ghost small" data-fill="0">空车</button>
@@ -256,15 +290,18 @@
             <button class="btn ghost small" data-fill="1">满座</button>
           </div>
           <div class="hint" style="margin-top:8px">
-            占用**按真实售票打散**（不是从排头顺序占），这样余票是碎片化的，
-            「凑不出连座 → 自动分票」才会被真实触发。
+            占用**不是从排头顺序占**，而是打散 —— 否则余票永远是末尾一整块，
+            「凑不出连座 → 自动分票」永远触发不到。
           </div>
           <div class="hint" id="fragInfo" style="margin-top:6px"></div>
         </div>
       </div>
-      <!-- 订单 -->
-      <div class="card">
-        <h2>用户下单记录 <span class="hint" id="orderCount"></span></h2>
+      <!-- 下单记录：开发者在 /dev 提交的订单与用户模式下单都会记在这里。
+           需求："开发者提交的订单难道不用保留吗" —— 原先这条路径完全没记录。 -->
+      <div class="card span6">
+        <h2>下单记录 <span class="hint" id="orderCount"></span>
+          <span class="hint" style="margin-left:auto">
+            含开发者组单与用户模式下单</span></h2>
         <div class="body" id="orders"><div class="hint">还没有订单。</div></div>
       </div>
   </div>
@@ -449,25 +486,43 @@ function renderOrders() {
   $("orderCount").textContent = orders.length ? `共 ${orders.length} 单` : "";
   const box = $("orders");
   if (!orders.length) {
-    box.innerHTML = '<div class="hint">还没有订单。去用户模式下单后会实时出现在这里。</div>';
+    box.innerHTML = `<div class="hint">还没有订单。在左侧「提交订单」
+      组单，或去<a href="/ticket">用户模式</a>下单，都会实时记到这里。</div>`;
     return;
   }
-  box.innerHTML = orders.slice().reverse().map((order) => `
-    <div style="margin-bottom:11px">
-      <div class="row" style="gap:6px">
-        <b style="font-size:13px">${esc(order.order_id)}</b>
-        <span class="tag">${esc(order.class_code)}</span>
-        ${order.split ? '<span class="tag q">自动分票</span>' : ""}
-        <span class="hint" style="margin-left:auto">${esc(order.rows.join("、"))}</span>
+  // 倒序（新的在前），每单一张小卡片；被拦下的单独配色并显示原因。
+  box.innerHTML = `<div class="ordergrid">${orders.slice().reverse().map((o) => {
+    const seats = (o.passengers || []).map((p) => {
+      const label = p.seat_id
+        ? `${esc(p.name)} ${esc(p.seat_id)}`
+        : `${esc(p.name)} 未出票`;
+      return `<span class="seatchip${p.seat_id ? "" : " none"}">${label}</span>`;
+    }).join("");
+    const tags = [
+      o.class_code ? `<span class="tag">${esc(o.class_code)}</span>` : "",
+      o.level_label ? `<span class="tag">${esc(o.level_label)}</span>` : "",
+      o.split ? '<span class="tag q">自动分票</span>' : "",
+      o.source === "dev-composition"
+        ? '<span class="tag">开发者组单</span>'
+        : '<span class="tag">用户下单</span>',
+    ].filter(Boolean).join("");
+    return `<div class="ordercard${o.blocked ? " blocked" : ""}"
+      data-testid="order-${esc(o.order_id)}">
+      <div class="orderhead">
+        <b>${esc(o.order_id)}</b>${tags}
+        <span class="hint">${
+          o.base_desc ? esc(o.base_desc) + " · " : ""
+        }${o.seated}/${o.total_passengers} 人就座</span>
       </div>
-      ${order.passengers.map((p) => `
-        <div class="paxline">
-          <span class="nm">${esc(p.name)}</span>
-          <span>${esc(p.seat_id || "候补")}</span>
-          <span style="color:${p.quiet ? "var(--quiet)" : "var(--muted)"}">
-            ${p.quiet ? "静音" : ""}</span>
-        </div>`).join("")}
-    </div>`).join("");
+      ${o.note ? `<div class="hint">备注：${esc(o.note)}</div>` : ""}
+      ${o.reason
+        ? `<div class="hint" style="color:var(--bad)">未出票：${esc(o.reason)}</div>`
+        : ""}
+      ${o.rows && o.rows.length
+        ? `<div class="hint">排布：${esc(o.rows.join("、"))}</div>` : ""}
+      <div class="orderseats">${seats}</div>
+    </div>`;
+  }).join("")}</div>`;
 }
 
 // ---- 提交订单：按基础分组人数组单 ----
@@ -546,15 +601,15 @@ function stepper(label, desc, value, onChange, testid, extraClass = "") {
   return row;
 }
 
-/** 特殊人群的行：标题一行、年龄段控件一行（避免挤成一竖列）。 */
+/** 特殊人群的行：标题一行、年龄段控件网格一行（避免挤成一竖列）。 */
 function bandRow(title, hint, levelId, counts, setter, prefix) {
   const row = document.createElement("div");
   row.className = "stepper wide";
   row.setAttribute("data-testid", `${prefix}-${levelId}`);
   row.innerHTML = `<span class="sname"><b>${esc(title)}</b>
     <span class="hint">${esc(hint)}</span></span>
-    <span class="sctl"></span>`;
-  const ctl = row.querySelector(".sctl");
+    <span class="bandgrid"></span>`;
+  const ctl = row.querySelector(".bandgrid");
   (compositionSchema.age_bands || []).forEach((band) => {
     const key = `${levelId}|${band.id}`;
     const value = counts[key] || 0;

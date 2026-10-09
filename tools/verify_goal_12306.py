@@ -328,6 +328,40 @@ check(bool(guarded.get("blocked")),
       "儿童无成人陪同被拦下（未进入求解器）")
 
 print()
+print("=== 目标 12f：开发者提交的订单必须被保留 ===")
+# 需求："开发者提交的订单难道不用保留吗" —— 原先这条路径完全没记录。
+call("/api/dev/reset", {"passengers": True})
+before = call("/api/dev/snapshot")[1]["orders"]
+check(len(before) == 0, f"重置后下单记录为空（{len(before)}）")
+submitted_ids = []
+for index, adult in enumerate((2, 3), start=1):
+    style, body = call("/api/composition/submit",
+                       {"orders": [_composition(adult=adult)]})
+    submitted_ids.append(body["orders"][0]["order_id"])
+after = call("/api/dev/snapshot")[1]["orders"]
+check(len(after) == 2, f"两张单都记进台账（{len(after)}）")
+check([o["order_id"] for o in after] == submitted_ids,
+      f"订单号唯一且与返回一致（{submitted_ids}）")
+check(len(set(submitted_ids)) == 2,
+      f"不同提交的订单号不重复（{submitted_ids}）")
+check(all(o.get("source") == "dev-composition" for o in after),
+      "台账标出来源是开发者组单")
+check(all(o.get("base_desc") for o in after),
+      f"台账记录了基础分组（{[o.get('base_desc') for o in after]}）")
+check(all(o.get("passengers") for o in after), "台账记录了逐位乘客")
+# 被拦下的单也要保留（"提交了但没出票"同样是记录）
+style, blocked = call("/api/composition/submit",
+                      {"orders": [_composition(adult=0, child=1)]})
+after2 = call("/api/dev/snapshot")[1]["orders"]
+check(len(after2) == 3, f"被拦下的单也记进台账（{len(after2)}）")
+check(after2[-1].get("blocked") is True, "被拦下的单标了 blocked")
+check(bool(after2[-1].get("reason")),
+      f"被拦下的单带原因（{after2[-1].get('reason', '')[:24]}…）")
+# 页面数据源就是这份快照：再取一次应仍在（刷新不丢）
+again = call("/api/dev/snapshot")[1]["orders"]
+check(len(again) == 3, f"再取快照记录仍在（{len(again)}）")
+
+print()
 print("=== 目标 13：轮椅固定停放位（独立编号，不占座位票额）===")
 status, snap = call("/api/dev/snapshot")
 bays = snap["wheelchair_bays"]

@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from smartrail.api import service  # noqa: E402
+from smartrail.ticketing import get_dev_store, reset_dev_store  # noqa: E402
 
 UNDER_PYTEST = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
 _FAILURES: list[str] = []
@@ -104,6 +105,9 @@ def test_term_pregnancy_gate() -> None:
 def test_multi_order_isolation() -> None:
     """多订单数据隔离：A 单的残疾数据不串到 B 单。"""
     print("[构成接口] 多订单数据隔离")
+    # 订单号现在按**台账已有单数**续号（否则每次都是 COMP-1，
+    # 记录无法区分）。所以这里先重置，编号才是确定的 COMP-1/COMP-2。
+    reset_dev_store()
     first = {**comp(adult=2), "note": "A 单"}
     first["disability"] = {"severe": {"adult": 1}}
     first["key_passenger_service"] = True
@@ -111,15 +115,27 @@ def test_multi_order_isolation() -> None:
     result = service.submit_compositions({"orders": [first, second]})
     check(result["summary"]["blocked_orders"] == 0, "两张订单各自独立通过")
     by_id = {item["order_id"]: item for item in result["orders"]}
-    check(by_id["COMP-1"]["check"]["total_passengers"] == 2, "A 单总人数 2")
-    check(by_id["COMP-2"]["check"]["total_passengers"] == 2, "B 单总人数 2")
+    check(len(by_id) == 2, f"两张订单编号互不相同（{sorted(by_id)}）")
+    ids = sorted(by_id)
+    check(by_id[ids[0]]["check"]["total_passengers"] == 2, "A 单总人数 2")
+    check(by_id[ids[1]]["check"]["total_passengers"] == 2, "B 单总人数 2")
     check(
-        by_id["COMP-1"]["info"]["disability"]["severe"]["adult"] == 1
-        and by_id["COMP-2"]["info"]["disability"]["severe"]["adult"] == 0,
+        by_id[ids[0]]["info"]["disability"]["severe"]["adult"] == 1
+        and by_id[ids[1]]["info"]["disability"]["severe"]["adult"] == 0,
         "残疾数据未串单",
     )
-    check(by_id["COMP-2"]["check"]["healthy_adults"] == 1,
+    check(by_id[ids[1]]["check"]["healthy_adults"] == 1,
           "B 单可用健康成人 1（未被 A 单影响）")
+    # 提交的订单必须被记进台账（需求："开发者提交的订单难道不用保留吗"）
+    store = get_dev_store()
+    check(len(store.orders) == 2,
+          f"两张单都记进台账（{len(store.orders)}）")
+    check([o["order_id"] for o in store.orders] == ids,
+          "台账里的订单号与返回一致（编号唯一，不再重复）")
+    check(all(o["source"] == "dev-composition" for o in store.orders),
+          "台账标出来源是开发者组单")
+    check(store.orders[0]["base_desc"] == "adult×2",
+          f"台账记录了基础分组（{store.orders[0]['base_desc']}）")
 
 
 def test_schema_returned() -> None:
