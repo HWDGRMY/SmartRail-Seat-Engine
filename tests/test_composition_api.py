@@ -626,6 +626,83 @@ def test_whole_row_is_never_missed() -> None:
           f"（实际 {len(used_rows)} vs 理论 {theoretical}）")
 
 
+def test_pairs_stay_adjacent_and_two_plus_two_is_ok() -> None:
+    """**2+2 是合法解** —— 要守的是"结伴的人紧邻"，不是"全挤在一排"。
+
+    真实反馈（用户）："谁说他们 4 个必须坐一排了？你弄成 2+2 不行吗？"
+
+    核实：代价函数一直是对的 ——
+
+    ==========================================  ==========
+    同一排 2+2（成人1+儿童1 = A,C；成人2+2 = D,F）      340
+    同一排 4 座（成人1 与儿童1 被隔到 A,F）            -6920
+    ==========================================  ==========
+
+    错的是上一版加的**排序键**：把"占用排数"当成压倒一切的键，
+    于是求解器拼命把一家四口塞进一排，甚至宁可拆散配对去凑整排。
+
+    正确的优先级是：先保"结伴配对紧邻"（用户真正在意的），
+    再看分几排、隔多远。这个测试守住前者 —— 它是硬要求；
+    不要求同排，因为 2+2 完全可接受。
+    """
+    print("[构成接口] 结伴紧邻优先，2+2 合法")
+    from smartrail.ticketing import reset_dev_store as _reset
+
+    payload = {**comp(adult=2, child=2), "class_code": "二等座"}
+    alphabet = "ABCDF"
+
+    def pair_ok(seats: dict[str, str]) -> tuple[bool, int]:
+        """返回 (所有 adult-N/child-N 配对是否紧邻, 占用排数)。"""
+        adults = {pid.rsplit("-", 2)[-2]: pid
+                  for pid in seats if "adult" in pid}
+        children = {pid.rsplit("-", 2)[-2]: pid
+                    for pid in seats if "child" in pid}
+        adjacent = True
+        for key, apid in adults.items():
+            cpid = children.get(key)
+            if not cpid:
+                continue
+            a, c = seats[apid], seats[cpid]
+            if a[:5] != c[:5]:                       # 不同排
+                adjacent = False
+            elif abs(alphabet.index(a[-1]) - alphabet.index(c[-1])) > 1:
+                adjacent = False                     # 同排但被过道隔开
+        rows = {s[:2] + s[3:5] for s in seats.values()}
+        return adjacent, len(rows)
+
+    # 空车：一排装得下 -> 同排；碎片化 -> 允许跨排，但配对必须紧邻
+    for remaining in (None, 300, 200, 152):
+        _reset()
+        _store = get_dev_store()
+        if remaining:
+            _store.set_remaining("二等座", remaining)
+        label = "空车" if remaining is None else f"余票 {remaining}"
+        splits = 0
+        broken = 0
+        rounds = 8
+        for _ in range(rounds):
+            result = service.submit_compositions({"orders": [payload]})
+            seats = result["orders"][0].get("seats") or {}
+            if not seats:
+                continue
+            adjacent, rows = pair_ok(seats)
+            if rows > 1:
+                splits += 1
+            if not adjacent:
+                broken += 1
+                print(f"      [{label}] 配对被拆：{seats}")
+        check(broken == 0,
+              f"{label}：{rounds} 单里结伴配对全部紧邻"
+              f"（{rounds - broken}/{rounds}，跨排 {splits} 次）")
+
+    # 空车必须能坐进一排（有余量却拆开就是浪费）
+    _reset()
+    result = service.submit_compositions({"orders": [payload]})
+    seats = result["orders"][0].get("seats") or {}
+    _adjacent, rows = pair_ok(seats)
+    check(rows == 1, f"空车时坐同一排（{list(seats.values())}）")
+
+
 def main() -> int:
     tests = [
         test_blocked_orders_are_not_submitted,
@@ -638,6 +715,7 @@ def main() -> int:
         test_key_service_and_companion_rules,
         test_wheelchair_is_a_category_not_a_severity,
         test_whole_row_is_never_missed,
+        test_pairs_stay_adjacent_and_two_plus_two_is_ok,
         test_schema_returned,
     ]
     if UNDER_PYTEST:

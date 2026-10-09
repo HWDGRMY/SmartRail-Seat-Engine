@@ -555,6 +555,60 @@ check(all(s.startswith(f"{car:02d}车{row:02d}") for s in got),
       f"用的就是那个整排（{car}车{row}排）")
 
 print()
+print("=== 目标 12e8：2+2 是合法解，结伴的人必须紧邻 ===")
+# 用户："谁说他们 4 个必须坐一排了？你弄成 2+2 不行吗？"
+# 代价函数一直是对的（同一排 2+2 = 340，同一排但配对隔开 = -6920），
+# 是上一版加的"排数优先"排序键在跟它打架。现在改为
+# "先保结伴紧邻，再看分几排"。
+_ALPHABET = "ABCDF"
+
+
+def _pairs_adjacent(order_data):
+    """座位号取自 ``entry["seats"]``（{passenger_id: seat_id}）。
+
+    **不要读 ``entry["passengers"][i]["seat_id"]``** —— 那是组单阶段的
+    乘客档案，座位号字段恒为 None（真踩过：整个检查因此形同虚设，
+    空车也报"跨排 6 次"）。
+    """
+    seats = dict(order_data.get("seats") or {})
+    if not seats:
+        return True, {}
+    adults = {pid.rsplit("-", 2)[-2]: pid for pid in seats if "adult" in pid}
+    children = {pid.rsplit("-", 2)[-2]: pid for pid in seats if "child" in pid}
+    for key, apid in adults.items():
+        cpid = children.get(key)
+        if not cpid:
+            continue
+        a, c = seats[apid], seats[cpid]
+        if a[:5] != c[:5]:
+            return False, seats
+        if abs(_ALPHABET.index(a[-1]) - _ALPHABET.index(c[-1])) > 1:
+            return False, seats
+    return True, seats
+
+
+for limit, label in ((None, "空车"), (300, "余票 300"), (152, "余票 152")):
+    call("/api/dev/reset", {"passengers": True})
+    if limit:
+        call("/api/dev/remaining", {"class_code": "二等座", "remaining": limit})
+    broken = 0
+    same_row = 0
+    rounds = 6
+    for _ in range(rounds):
+        composed = _composition(adult=2, child=2)
+        composed["class_code"] = "二等座"
+        style, body = call("/api/composition/submit", {"orders": [composed]})
+        entry = body["orders"][0]
+        ok, seats = _pairs_adjacent(entry)
+        if not ok:
+            broken += 1
+            print(f"      [{label}] 配对被拆：{seats}")
+        if len({s[:2] + s[3:5] for s in seats.values()}) == 1:
+            same_row += 1
+    check(broken == 0,
+          f"{label}：{rounds} 单里结伴配对全部紧邻（跨排 {rounds - same_row} 次）")
+
+print()
 print("=== 目标 12f：开发者提交的订单必须被保留 ===")
 # 需求："开发者提交的订单难道不用保留吗" —— 原先这条路径完全没记录。
 call("/api/dev/reset", {"passengers": True})

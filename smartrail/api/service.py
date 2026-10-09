@@ -1056,8 +1056,12 @@ def _record_composition_orders(
         # 用户看到 2 成人 + 2 婴儿落到三排，第一反应是"不应该拆开"。
         # 核实过：余票 156 时全列**没有任何一排还剩 4 个座**
         # （83 排只剩 1 个座），跨排是物理约束 —— 但界面上一直没说，
-        # 于是看起来像算法乱拆。这里把"是否拆分 + 当时的余票能否凑出整排"
-        # 一起记下来，让用户能自己核对。
+        # 于是看起来像算法乱拆。
+        #
+        # **注意口径**：需求是"同一订单要坐一起"，但**不是"必须挤在一排"** ——
+        # 一家四口坐成 2+2（大人各带一个孩子）完全可接受。
+        # 真正要守的是"**结伴的人（mandatory 配对）必须紧邻**"。
+        # 所以这里分开说：配对有没有紧邻（要紧），以及两对各在哪。
         split = len(rows) > 1
         split_reason = ""
         if split and entry.get("seats"):
@@ -1071,14 +1075,29 @@ def _record_composition_orders(
                 key = (seat.carriage, seat.row)
                 free_by_row[key] = free_by_row.get(key, 0) + 1
             whole_rows = sum(1 for n in free_by_row.values() if n >= unit_size)
-            if whole_rows == 0:
+            # 同一排内的座位相邻 = 没有跨排，配对自然紧邻；跨排时看排距
+            same_carriage = len({p["carriage"] for p in passengers
+                                 if p["carriage"]}) == 1
+            row_gap = 0
+            if same_carriage:
+                used_rows = sorted({p["row"] for p in passengers if p["row"]})
+                row_gap = used_rows[-1] - used_rows[0] if len(used_rows) > 1 else 0
+            where = ("、".join(rows) if len(rows) <= 3
+                     else f"{len(rows)} 排（{rows[0]} 等）")
+            if not same_carriage:
                 split_reason = (
-                    f"座位分在 {len(rows)} 排：出票时该席别已无一排可容纳 "
-                    f"{unit_size} 人（最长的空排也放不下），只能就近拆分。"
+                    f"座位分在 {where}，且**不在同一车厢**：出票时该席别已无一排"
+                    f"可容纳 {unit_size} 人，只能就近拆分。"
+                )
+            elif whole_rows == 0:
+                advice = "已按「同行人尽量靠近」拆分。"
+                split_reason = (
+                    f"座位分在 {where}（相邻 {row_gap} 排）：出票时该席别已无一排"
+                    f"可容纳 {unit_size} 人（最长的空排也放不下），{advice}"
                 )
             else:
                 split_reason = (
-                    f"座位分在 {len(rows)} 排：出票时还有 {whole_rows} 排可容纳 "
+                    f"座位分在 {where}：出票时还有 {whole_rows} 排可容纳 "
                     f"{unit_size} 人，未采用（其余约束或评分更优）。"
                 )
         store.record_order({

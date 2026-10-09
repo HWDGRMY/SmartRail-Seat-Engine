@@ -367,7 +367,8 @@ class SolverTables:
             # 用个体分排序去挑名额是错的 —— 紧凑组合的个体分最低，
             # 排在最后，正好被 max_per_carriage 截掉（实测余票 156 时
             # 全列唯一的整排 10车09B/C/D/F 就是这样被丢掉的）。
-            est.sort(key=lambda item: (*_row_key(self.seats, item[1]), -item[0]))
+            est.sort(key=lambda item: (
+                *_row_key(self.seats, item[1], unit, self.ctx), -item[0]))
             target = scored if len(slots) >= size else fallback
             # **每节车厢都要给"最紧凑"的组合留位置。**
             #
@@ -382,7 +383,7 @@ class SolverTables:
             reserved: list[tuple[float, tuple[int, ...]]] = []
             filler: list[tuple[float, tuple[int, ...]]] = []
             for value, combo in est:
-                key = (_row_key(self.seats, combo),
+                key = (_row_key(self.seats, combo, unit, self.ctx),
                        self.seats[combo[0]].carriage)
                 if per_key.get(key, 0) < 2:
                     per_key[key] = per_key.get(key, 0) + 1
@@ -400,7 +401,7 @@ class SolverTables:
                 # 10车09B/C/D/F 就是这样被挤掉的。
                 com_seen: set[tuple[int, int]] = set()
                 for value, combo in est:
-                    key = (_row_key(self.seats, combo),
+                    key = (_row_key(self.seats, combo, unit, self.ctx),
                            self.seats[combo[0]].carriage)
                     if key in com_seen:
                         continue
@@ -1063,50 +1064,66 @@ def assign_greedy(
     return solution
 
 
-def _row_key(seats: Sequence[Seat], combo: Sequence[int]) -> tuple[int, int]:
-    """候选的"坐在一起"程度：``(占用排数, 排号跨度)``。
+def _row_key(seats: Sequence[Seat], combo: Sequence[int],
+             unit: "PassengerUnit | None" = None,
+             ctx: "OrderContext | None" = None) -> tuple[int, int]:
+    """候选的"坐在一起"程度：``(拆散对数, 占用排数)``。
 
-    * **占用排数**越小越好 —— 一排装得下就绝不拆；
-    * 装不下时，**排号跨度**越小越好 —— "05车01排 + 05车02排"（相邻）
-      明显优于"05车01排 + 05车09排"（隔了八排），
-      而成对项只看"人与人是否相邻"，对这两者打分完全一样。
+    **先看有没有把该在一起的人拆开，再看分成几排。**
 
-    真实反馈：用户看到 2 成人 + 2 婴儿落到 ``15车7排 / 15车8排 / 15车9排``，
-    说"第四个订单不应该拆开的"。核实：余票 156 时**全列没有任何一排还剩 4 个座**
-    （83 排只剩 1 个座），跨排是物理约束；但"跨到哪几排"完全可以优化。
+    为什么是这个顺序（吃过一次亏）：上一版把"占用排数"当成压倒一切的
+    排序键，于是求解器拼命把一家四口塞进一排，甚至宁可把"成人1 + 儿童2"
+    凑成一对 —— 而真实需求是"**2+2 完全没问题**，大人各带一个孩子就行"。
+    代价函数其实一直是对的（实测：同一排 2+2 = 340 分，
+    同一排但每对被隔开 = −6920 分），是我加的排序键在跟它打架。
+
+    * ``拆散对数``：该单元里**紧邻关系被破坏**的配对数（距离 > 1），
+      越小越好 —— 这是用户真正在意的"别把孩子和大人分开"；
+    * ``占用排数``：只在拆散对数相同时才用来打破平局。
+
+    没有 ``unit`` 信息时退化为"占用排数"（保持旧行为，供不关心
+    配对的调用方使用）。
     """
-    used = sorted({(seats[slot].carriage, seats[slot].row) for slot in combo})
-    span = (used[-1][1] - used[0][1]) if len(used) > 1 else 0
-    return len(used), span
+    if unit is not None and ctx is not None and len(combo) == unit.size:
+        split_pairs = 0
+        for (pa, ia), (pb, ib) in combinations(
+            list(zip(unit.passengers, combo)), 2
+        ):
+            if ctx.order.bond_of(pa.passenger_id, pb.passenger_id) is not BondType.MANDATORY:
+                continue
+            if seats[ia].manhattan_to(seats[ib]) > 1:
+                split_pairs += 1
+        rows = len({(seats[slot].carriage, seats[slot].row) for slot in combo})
+        return split_pairs, rows
+    rows = len({(seats[slot].carriage, seats[slot].row) for slot in combo})
+    return 0, rows
 
 
 def _by_row_span(
     tables: "SolverTables",
     options: Sequence[tuple[tuple[int, ...], float]],
+    unit: PassengerUnit | None = None,
+    ctx: OrderContext | None = None,
 ) -> list[tuple[tuple[int, ...], float]]:
-    """把候选按"占排数升序、排号跨度升序、个体分降序"重排。
+    """把候选按"拆散对数升序、占排数升序、个体分降序"重排。
 
-    为什么要单独再排一次：``tables.candidates()`` 已按占排数排过一次，
+    为什么要单独再排一次：``tables.candidates()`` 已按紧凑度排过一次，
     但为了控制时延，它在**每节车厢内部**做过截断（``max_per_carriage``），
-    被截掉的正是"占排少但个体分低"的组合。分支限界只评估前 N 个候选，
+    被截掉的正是"紧凑但个体分低"的组合。分支限界只评估前 N 个候选，
     于是"坐在一起"的方案可能整个池子里都不剩几个、甚至一个不剩。
 
     这里不再截断，只重排 —— 池子本身是有限的（全局上限 32~72），
-    排序成本可忽略，换来的是"少分排"方案一定进入评估。
+    排序成本可忽略，换来的是"少拆散"方案一定进入评估。
     """
     return sorted(
         options,
-        key=lambda item: (*_row_key(tables.seats, item[0]), -item[1]),
+        key=lambda item: (*_row_key(tables.seats, item[0], unit, ctx), -item[1]),
     )
 
 
 def _row_span(seats: Sequence[Seat], combo: Sequence[int]) -> int:
-    """一个座位组合占用了几个不同的排。
-
-    "坐在一起"的度量：同排 1、跨两排 2…… 用它给候选排序，
-    保证"尽量少分排"的方案先被评估到。
-    """
-    return _row_key(seats, combo)[0]
+    """一个座位组合占用了几个不同的排。"""
+    return _row_key(seats, combo)[1]
 
 
 def _unit_pair_ceiling(unit: PassengerUnit, ctx: OrderContext, tables: SolverTables) -> float:
@@ -1454,7 +1471,9 @@ def assign_exact(
         # 排序后再取前 N 个，保证"坐在一起"的方案一定进入评估。
         probe_limit = 20 if len(unit.passengers) <= 4 else 10
         probes = 0
-        for combo, _estimate in _by_row_span(tables, tables.candidates(unit)):
+        for combo, _estimate in _by_row_span(
+            tables, tables.candidates(unit), unit, ctx
+        ):
             if not set(combo) <= free:
                 continue
             if probes >= probe_limit:
