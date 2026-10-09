@@ -135,6 +135,18 @@ def build_context(
             cross_bonds[frozenset((a.passenger_id, b.passenger_id))] = order.bond_of(
                 a.passenger_id, b.passenger_id
             )
+    # **席别是硬约束，必须在候选池这一层就过滤掉。**
+    #
+    # 原先只在 `SolverTables` 建候选时按席别筛，而 `state.available_seats`
+    # 仍包含全部席位 —— 于是"商务座"订单的候选池是整列车，
+    # 实测 V2 会给出 `11车01C`（**二等座**），V1 只是在评测阶段才被扣分。
+    #
+    # 回到本项目的核心教训：**候选池决定"能不能选"，代价只决定"选哪个"**。
+    # 凡"必须满足"的约束都要落在候选池上，不能指望罚分兜住。
+    wanted_class = str(getattr(order, "class_code", "") or "")
+    seat_source = list(all_seats) if all_seats is not None else []
+    if wanted_class and seat_source:
+        seat_source = [s for s in seat_source if s.class_code == wanted_class]
     return OrderContext(
         order=order,
         units=units,
@@ -143,7 +155,7 @@ def build_context(
         cross_bonds=cross_bonds,
         care_dependent={pid: is_care_dependent(p, order) for pid, p in passengers.items()},
         helpers={pid: support_people_of(p, order) for pid, p in passengers.items()},
-        all_seats=tuple(all_seats) if all_seats is not None else (),
+        all_seats=tuple(seat_source),
         occupied_seats=frozenset(occupied_seats or ()),
     )
 

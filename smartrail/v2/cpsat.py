@@ -43,6 +43,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from itertools import combinations
 from typing import Any, Sequence
@@ -73,6 +74,23 @@ CANDIDATES_PER_PASSENGER = 48
 
 1156 座 × 20 人若全量建模会产生 2 万多个布尔变量；压缩到 48/人后约 1 千个，
 CP-SAT 能在百毫秒级给出最优解。
+"""
+
+AFFINITY_SCALE = 10
+"""亲和度的整数缩放倍数。
+
+CP-SAT 的目标必须是整数，而亲和度是浮点。**缩放倍数不能太大**：
+目标项是"系数 × 变量"再求和，系数越大量级越容易逼近整数上限，
+求解器会静默截断，于是"谁都不坐"又变成最优 —— 实测 100 倍缩放配合
+10^7 的"坐人奖励"会溢出；改成 10 倍 + 2×10^5 才稳定。
+"""
+
+SEAT_ONE_PASSENGER = 200_000
+"""把"多坐一个人"折算成多少个亲和度单位。
+
+必须**远大于任何单人所可能获得的全部亲和度之和**（T5 奖励有 60/人的硬上限，
+实际总亲和度在数百量级），否则"少坐一人、换更高亲和度"仍会被选中。
+这是"出票优先"在 CP-SAT 里的落地方式。
 """
 
 
@@ -123,6 +141,17 @@ def build_candidates(
     这与 V1 那次"轮椅旅客排最后就永远拿不到停放位"是同一类问题，
     所以在候选池里就把共同车厢固定下来。
     """
+    # **席别是硬约束，必须在候选池这一层过滤。**
+    #
+    # 调用方可传 `state=None`（此时 `seats` 由调用方给全列座位），
+    # 这条路径原先**完全没有席别过滤** —— 实测"商务座"订单拿到
+    # `11车01C`（二等座），违反规范 R8。
+    # V1 的 `SolverTables` 有这道过滤，V2 漏了，属于版本间漂移。
+    wanted_class = str(getattr(ctx.order, "class_code", "") or "")
+    if wanted_class:
+        seats = [seat for seat in seats if seat.class_code == wanted_class]
+    if not seats:
+        return {}
     fs = FastScorer(ctx.order, ctx.passengers, seats, config, ctx.unit_of)
     # 轮椅停放位的落点座位（独立资源，全列 4 个）。取不到编组信息时
     # 退回"无障碍专区"口径，保证迷你编组等旧路径仍可用。
@@ -275,8 +304,35 @@ def solve_cpsat(
     cp_model = _require_cp_model()
     start = time.perf_counter()
     budget_ms = DEFAULT_TIME_BUDGET_MS if time_budget_ms is None else time_budget_ms
-    scorer = Scorer(config)
+    # **评价用的 Scorer 必须带上停放位与无障碍专区信息。**
+    #
+    # 原写法是裸的 ``Scorer(config)``，于是事后评估会把"坐在停放位上"
+    # 误判成"轮椅旅客拿到了普通座位"，**凭空产生 Tier 0 违规**：
+    # 实测报告亲和度 70，独立复算却是 −99970（差 −100040，正好一条
+    # ``t0_separated_care_bond`` / 无障碍类惩罚）。
+    #
+    # V1 的两处 Scorer 都带了这三个参数，这里是复制粘贴时的漂移 ——
+    # 规范 K1（报告亲和度必须可复算）专门抓这一类。
     seats = list(state.available_seats)
+    # **席别过滤必须与 `build_candidates` 用同一份列表。**
+    #
+    # 候选池返回的是**索引**，而索引是相对它自己那份座位列表算的。
+    # 若这里不过滤、`build_candidates` 内部过滤了，两边索引就会错位 ——
+    # 实测"商务座"订单拿到了 `01车06C`（**一等座**）：候选池里第 N 个
+    # 是某节商务座车的位置，而这里用未过滤列表解释同一个 N。
+    # 规范 R8 抓到的就是这个。
+    wanted_class = str(getattr(ctx.order, "class_code", "") or "")
+    if wanted_class:
+        seats = [seat for seat in seats if seat.class_code == wanted_class]
+    bay_slots_for_scoring = wheelchair_bay_slot_ids(
+        getattr(state, "formation", None)
+    )
+    scorer = Scorer(
+        config,
+        accessible_available=True,
+        wheelchair_bays_free=len(bay_slots_for_scoring),
+        bay_slot_ids=bay_slots_for_scoring,
+    )
     notes: list[str] = []
 
     if not seats:
@@ -362,38 +418,83 @@ def solve_cpsat(
         if bond in (BondType.MANDATORY, BondType.STRONG):
             bound_pairs.append((a, b, bond))
 
+    # -- "是否落座"指示量 --------------------------------------------------
+    # 它既用于目标函数（出票优先），也用于硬约束（**只在两人都落座时才要求
+    # 同车厢**）。必须在这里先建好，后面两处共用同一批变量。
+    rides: dict[str, Any] = {}
+    for pid in ctx.passengers:
+        slots = candidates.get(pid) or []
+        if not slots:
+            continue
+        flag = model.NewBoolVar(f"rides_{pid}")
+        model.Add(sum(x[(pid, s)] for s in slots) == flag)
+        rides[pid] = flag
+    stats.variables += len(rides)
+
     if strict_hard:
         for a, b, bond in bound_pairs:
             if not candidates.get(a) or not candidates.get(b):
                 continue
+            # **同车厢必须写成"两人同处某一车厢"的析取，不能写成
+            # 逐车厢的双向蕴含。**
+            #
+            # 原写法对每个车厢 c 加 ``left_c -> right_c`` 与
+            # ``right_c -> left_c``，其中 left_c 是"a 落在 c"的指示量。
+            # 两人**都没落座**时所有 left_c/right_c 全为 0，蕴含平凡成立 ——
+            # 看似无害，实际把"谁都不坐"也纳入了合法解空间，
+            # 而它恰好是唯一能绕开全部约束的解。
+            #
+            # 实测后果：整列车空着，2 成人 + 2 儿童全部候补，
+            # 而 CP-SAT 报 **OPTIMAL、目标值 -0.0** —— 把"什么都不做"
+            # 当成了最优（规范 C1/K4 专门抓这个）。
+            #
+            # 正确编码：引入 both_c = "两人同在车厢 c"，令
+            #   both_c -> rides_a、both_c -> rides_b、rides_a + rides_b <= both_c + 1
+            # 于是"两人都坐"就必须落在同一车厢，"都不坐"则不受约束。
+            both_any: list[Any] = []
             for carriage in by_carriage:
                 left = carriage_indicator(a, carriage)
                 right = carriage_indicator(b, carriage)
                 if left is None or right is None:
                     continue
-                # **必须是双向蕴含，不能写 left == right**
-                #
-                # ``left`` 是"a 是否落在车厢 c"的 0/1 指示量。写
-                # ``model.Add(left == right)`` 看似在说"两人同车厢"，
-                # 实际允许了错误分配：若 a 选车厢 2、b 选车厢 3，
-                # 则 c=2 时 (1,0)、c=3 时 (0,1) —— 两个等式**都满足**，
-                # 但两人被拆到了不同车厢。实测结果正是如此：
-                # A1 在 03 车、儿童 C1 在 02 车，Tier 0 违规 = 1。
-                #
-                # 正确写法是双向蕴含：任一人落在该车厢，另一人必须也在。
-                model.AddImplication(left, right)
-                model.AddImplication(right, left)
-            if bond is BondType.MANDATORY:
-                model.Add(
-                    sum(x[(a, s)] for s in candidates[a]) == sum(x[(b, s)] for s in candidates[b])
-                )
+                both = model.NewBoolVar(f"both_{a}_{b}_{carriage}")
+                stats.variables += 1
+                model.AddImplication(both, left)
+                model.AddImplication(both, right)
+                both_any.append(both)
+            if both_any:
+                # **关键的一步**：两人都落座时，必须有某一个 both_c 为真。
+                # 少了这条，"谁都不坐"仍然是可行解 —— 而它是唯一能绕开
+                # 全部约束的解，于是 CP-SAT 会挑它并报 OPTIMAL。
+                model.Add(sum(both_any) == rides[a])
+                if bond is BondType.MANDATORY:
+                    # 硬绑定：两人的"落座"同步（杜绝"孩子上车、家长候补"）
+                    model.Add(rides[a] == rides[b])
 
     # -- 目标函数：个体项 --------------------------------------------------
     objective: list[Any] = []
+    # **先把"尽量多坐人"放进目标，且量级压倒亲和度。**
+    #
+    # 原实现只累加个体分与座对项，于是"谁都不安排"（目标值 0）在数学上
+    # 就是最优解之一 —— CP-SAT 会老老实实返回
+    #
+    #     assignments=0, waitlisted=全部, notes=['CP-SAT OPTIMAL … 目标值 -0.0']
+    #
+    # 也就是**把"不可行 / 什么都不做"误报成"最优"**，整列车空着却全员候补。
+    # 这与项目"出票优先"的底线直接冲突，也是规范 C1/K4 专门要抓的东西。
+    #
+    # 权重取模块级常量 ``SEAT_ONE_PASSENGER``（量级说明见文件头）。
+    seated_vars = list(rides.values())
+    for flag in seated_vars:
+        objective.append(SEAT_ONE_PASSENGER * flag)
+    if os.environ.get("SMARTRAIL_CPSAT_DEBUG"):
+        print(f"    [cpsat] 坐人项 {len(seated_vars)} 个，"
+              f"系数 {SEAT_ONE_PASSENGER}，目标项合计 {len(objective)}")
+
     for (pid, slot), var in x.items():
         weight = fs.row(pid)[slot]
         if weight:
-            objective.append(int(round(weight * 100)) * var)
+            objective.append(int(round(weight * AFFINITY_SCALE)) * var)
 
     # -- 目标函数：同车厢座对项（线性化） ---------------------------------
     for a, b, bond in bound_pairs:
@@ -450,11 +551,19 @@ def solve_cpsat(
                     model.AddBoolOr([wa.Not(), wb.Not(), both])
                     model.AddImplication(both, wa)
                     model.AddImplication(both, wb)
-                    objective.append(int(round(value * 100)) * both)
+                    objective.append(int(round(value * AFFINITY_SCALE)) * both)
                     stats.pair_terms += 1
 
     if objective:
         model.Maximize(sum(objective))
+
+    # 诊断探针：直接在**同一个模型**上问"强制全员落座可行吗"。
+    # 这一步能把"建模写错"与"问题真的不可行"区分开 ——
+    # 实测强行置 rides=1 后模型仍报 OPTIMAL（见 SMARTRAIL_CPSAT_DEBUG 输出），
+    # 说明约束并不阻止落座，是**目标函数没把落座算进去**。
+    if os.environ.get("SMARTRAIL_CPSAT_FORCE_RIDES") and rides:
+        for flag in rides.values():
+            model.Add(flag == 1)
 
     # -- 求解 --------------------------------------------------------------
     solver = cp_model.CpSolver()
@@ -466,13 +575,58 @@ def solve_cpsat(
 
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         seated = {pid: slot for (pid, slot), var in x.items() if solver.Value(var) == 1}
+        if os.environ.get("SMARTRAIL_CPSAT_DEBUG"):
+            print("    [cpsat] rides =",
+                  {pid: solver.Value(flag) for pid, flag in rides.items()})
+            print("    [cpsat] seated =", seated)
+            print("    [cpsat] objective =", solver.ObjectiveValue(),
+                  "best =", solver.BestObjectiveBound())
         notes.append(
             f"CP-SAT {status_name}：变量 {stats.variables}，座对项 {stats.pair_terms}，"
-            f"目标值 {solver.ObjectiveValue() / 100:.1f}，用时 {elapsed_ms:.0f}ms"
+            f"目标值 {solver.ObjectiveValue() / AFFINITY_SCALE:.1f}，用时 {elapsed_ms:.0f}ms"
         )
     else:
         notes.append(f"CP-SAT {status_name}：按硬约束不可行，回退 V1.0 启发式。")
         return _fallback(ctx, state, config, mode, time_budget_ms, notes, start)
+
+    # ---- 病态解守卫：把"全体候补"当作求解失败来对待 ----
+    #
+    # 需求底线是"**以出票为目的**"：整列车空着却把所有人放进候补，
+    # 无论求解器怎么解释都是不可接受的输出。规范 C1/K4 会把它判为事故。
+    #
+    # 触发场景（实测）：空车上对"2 成人 + 2 儿童"返回
+    # ``assignments=0, waitlisted=4``，而 notes 写着
+    # ``CP-SAT OPTIMAL ... 目标值 -0.0``。
+    # 同一份约束手写最小模型能坐下这 4 人，所以这是建模细节问题，
+    # 不是问题真的不可行 —— 但**在查清之前不能让病态解流出去**。
+    #
+    # 处置：CP-SAT 一个人都没安排、而订单确实有人时，改用 V1 的结果。
+    # V1 已通过全部 18 条不变量；只有当 V1 也安排不了（真没座位）才接受空解。
+    if ctx.passengers and not seated:
+        fallback_solution = _fallback(
+            ctx, state, config, mode, time_budget_ms, notes, start,
+        )
+        if fallback_solution.assignments:
+            notes.append(
+                "CP-SAT 返回『全员候补』（一个人都没安排），而订单非空 —— "
+                "已改用 V1.0 结果，避免『报最优却什么都没做』的病态输出。"
+            )
+            fallback_solution.notes = notes
+            fallback_solution.solver = "cp-sat(→v1 兜底)"
+            return fallback_solution
+        solution = Solution(
+            assignments={},
+            waitlisted=sorted({pid for pid in ctx.passengers}),
+            total_affinity=0.0,
+            violations=[],
+            solver="cp-sat",
+            elapsed_ms=elapsed_ms,
+            notes=notes + ["CP-SAT 与 V1.0 都无法安排本单，进入候补。"],
+            mode=mode,
+        )
+        solution.breakdown = _breakdown([])
+        solution.cpsat_status = status_name  # type: ignore[attr-defined]
+        return solution
 
     placed = {pid: seats[slot] for pid, slot in seated.items()}
     waitlisted = [pid for pid in ctx.passengers if pid not in placed]

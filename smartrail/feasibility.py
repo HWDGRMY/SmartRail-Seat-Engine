@@ -154,12 +154,21 @@ def analyse_order(
         result.message = "全车已无余票，本单只能候补。"
         return result
     if len(free) < len(order.passengers):
-        result.code = "NO_SEATS"
+        # **余票不够全员，但还有座位 —— 这不是"拒票"，是"部分出票"。**
+        #
+        # 原先这里标成 ``blocking``，于是上层**跳过求解、整单候补**：
+        # 实测"该席别还剩 4 个空座、下 3 人单"被整单拒掉（0 出票），
+        # 与项目底线"以出票为目的"直接冲突。规范 C1 抓到的就是这个。
+        #
+        # 改成 advisory 后照常进求解器，由求解器尽量多地安排，
+        # 安排不下的人进候补 —— 这才是"部分出票，其余候补"的本意。
+        # 保留 ``feasible = False`` 表示"无法全员满足"。
+        result.code = "PARTIAL"
         result.feasible = False
-        result.severity = "blocking"
+        result.severity = "advisory"
         result.message = (
             f"全车余票 {len(free)} 个，少于本单 {len(order.passengers)} 人 —— "
-            f"只能部分出票，其余候补。"
+            f"将尽最大可能出票，其余候补。"
         )
         return result
 
