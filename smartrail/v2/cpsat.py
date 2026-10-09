@@ -51,7 +51,11 @@ from ..clustering import BookingState
 from ..config import EngineConfig
 from ..fastscore import FastScorer
 from ..models import BondType, Order, Seat, Solution
-from ..scoring import Scorer
+from ..scoring import (
+    Scorer,
+    is_wheelchair_seat,
+    wheelchair_bay_slot_ids,
+)
 from ..solver import (
     OrderContext,
     _to_assignments,
@@ -94,43 +98,76 @@ def build_candidates(
     seats: list[Seat],
     config: EngineConfig,
     per_passenger: int = CANDIDATES_PER_PASSENGER,
+    state: BookingState | None = None,
 ) -> dict[str, list[int]]:
-    """为每位乘客生成候选座位槽（已内嵌 Tier 0 硬约束）。"""
+    """为每位乘客生成候选座位槽（已内嵌 Tier 0 硬约束）。
+
+    **同车厢约束必须在候选池这一层保证**
+    ------------------------------------
+    硬绑定的两人（家长-儿童）必须坐同一车厢。这条约束在模型里是
+    "两人落在车厢 c 的指示量互相蕴含"，但它只有在**两人都有同一车厢的候选**
+    时才可能被满足。
+
+    早期实现让每位乘客各自按亲和度取前 N 个候选，结果两位乘客的候选
+    落在**互不重叠的车厢集合**里：
+
+    ==========  ==============================
+    A1（家长）  {1: 13, 2: 1, 3: 13, 11: 13}
+    C1（儿童）  {1: 13, 2: 13, 4: 13, 5: 1}
+    ==========  ==============================
+
+    共同车厢只有 1 和 2，其中车厢 2 在 A1 侧只剩 1 个候选 —— 模型交付了
+    "A1 在 03 车、儿童在 02 车"这种把一家人拆开的解，而且报 OPTIMAL。
+    CP-SAT 没有错：**是候选池让它无解可施**。
+
+    这与 V1 那次"轮椅旅客排最后就永远拿不到停放位"是同一类问题，
+    所以在候选池里就把共同车厢固定下来。
+    """
     fs = FastScorer(ctx.order, ctx.passengers, seats, config, ctx.unit_of)
+    # 轮椅停放位的落点座位（独立资源，全列 4 个）。取不到编组信息时
+    # 退回"无障碍专区"口径，保证迷你编组等旧路径仍可用。
+    formation = getattr(state, "formation", None) if state is not None else None
+    bay_slots = wheelchair_bay_slot_ids(formation)
+    if not bay_slots:
+        bay_slots = frozenset(
+            seat.seat_id for seat in seats if seat.in_accessible_zone()
+        )
     out: dict[str, list[int]] = {}
+
+    def base_allowed(passenger: Any) -> list[int]:
+        if passenger.is_mobility_impaired:
+            # 约束 3：轮椅乘客只允许**轮椅固定停放位**的落点座位
+            return [i for i, seat in enumerate(seats) if is_wheelchair_seat(seat, bay_slots)]
+        return list(range(len(seats)))
+
+    # 计算每人的"可坐车厢"集合，供硬绑定求交集
+    allowed_carriages: dict[str, set[int]] = {}
+    for passenger in ctx.order.passengers:
+        allowed_carriages[passenger.passenger_id] = {
+            seats[i].carriage for i in base_allowed(passenger)
+        }
 
     for passenger in ctx.order.passengers:
         pid = passenger.passenger_id
         row = fs.row(pid)
+        allowed = base_allowed(passenger)
 
-        if passenger.is_mobility_impaired:
-            # 约束 3：轮椅乘客只允许无障碍专区座位
-            allowed = [i for i, seat in enumerate(seats) if seat.in_accessible_zone()]
-        else:
-            allowed = list(range(len(seats)))
-            mandatory = [
-                h
-                for h in ctx.helpers.get(pid, frozenset())
-                if ctx.order.bond_of(pid, h) is BondType.MANDATORY
-            ]
-            if mandatory:
-                shared: set[int] | None = None
-                for helper in mandatory:
-                    helper_passenger = ctx.passengers[helper]
-                    carriages = {
-                        seat.carriage
-                        for seat in seats
-                        if not (
-                            helper_passenger.is_mobility_impaired
-                            and not seat.in_accessible_zone()
-                        )
-                    }
-                    shared = carriages if shared is None else (shared & carriages)
-                if shared:
-                    allowed = [i for i in allowed if seats[i].carriage in shared]
+        mandatory = [
+            h
+            for h in ctx.helpers.get(pid, frozenset())
+            if ctx.order.bond_of(pid, h) is BondType.MANDATORY
+        ]
+        if mandatory:
+            # 与所有硬绑定同伴求**共同可坐车厢**，并把候选限制在这个交集里。
+            # 只在交集为空时才退化为不限制（那种情况本来就无解，
+            # 由模型层去候补，而不是悄悄拆开）。
+            shared = set(allowed_carriages.get(pid, set()))
+            for helper in mandatory:
+                shared &= allowed_carriages.get(helper, set())
+            if shared:
+                allowed = [i for i in allowed if seats[i].carriage in shared]
 
-        ranked = _rank_with_per_carriage_quota(allowed, row, seats, per_passenger)
-        out[pid] = ranked
+        out[pid] = _rank_with_per_carriage_quota(allowed, row, seats, per_passenger)
     return out
 
 
@@ -140,18 +177,31 @@ def _rank_with_per_carriage_quota(
     seats: list[Seat],
     per_passenger: int,
 ) -> list[int]:
-    """候选池构造：**把预算分给最好的车厢，而不是平均撒到每节车厢**。
+    """候选池构造：**保证每节可坐车厢都有代表**，再按个体分排序。
 
-    两难之处：
-    * 若"全局取前 N"，候选会全部挤在一两节车厢 —— 硬绑定双方的交集会变空，
-      "同车厢"约束反而无法成立；
-    * 若"每节车厢等额配额"（早期做法），158 个可用座位会被切成 16 份，
-      每车厢只剩 1 个候选，连"3 人坐一起"都排不出来。
+    为什么不能"把预算分给最好的几节车厢"
+    ------------------------------------
+    早期实现取 ``per_carriage = per_passenger // 3``（40 // 3 = 13），
+    然后按车厢亲和度依次填满：13 + 13 + 13 = 39 —— 预算用完，
+    **第 4 节及以后的车厢一个候选都拿不到**。
 
-    因此这里按车厢聚合，先按"该车厢的最好个体分"给车厢排序，再按顺序
-    逐车厢把配额填满（``per_carriage`` 个/车厢），末尾用少量其他车厢的候选兜底。
+    后果不是"候选少一点"，而是**硬绑定的家长与儿童被拆开**：
+
+    ==========  =====================================
+    A1（家长）  {1: 13, 2: 1, 3: 13, 11: 13}   ← 车厢 4 消失
+    C1（儿童）  {1: 13, 2: 13, 4: 13, 5: 1}
+    ==========  =====================================
+
+    两人可能同处的车厢 4 在 A1 侧没有候选，于是模型里那条"同车厢"
+    蕴含约束无处施加，CP-SAT 交出了"A1 在 03 车、儿童在 02 车"的解，
+    还报 OPTIMAL。**CP-SAT 没错，是候选池让它无解可施。**
+
+    正确做法是**均衡轮转**：先把每节车厢的最好几个座位各取一个，
+    循环直到预算用尽。这样每节车厢都有代表，共同车厢不会被挤掉，
+    同时高亲和度的车厢仍能多拿（因为它们排在前、轮次更多）。
     """
     if len(allowed) <= per_passenger:
+        # 候选比预算还少：全都要，不必削减
         return sorted(allowed, key=lambda i: (-affinity_row[i], i))
 
     by_carriage: dict[int, list[int]] = {}
@@ -159,28 +209,42 @@ def _rank_with_per_carriage_quota(
         by_carriage.setdefault(seats[slot].carriage, []).append(slot)
     for group in by_carriage.values():
         group.sort(key=lambda i: (-affinity_row[i], i))
-    ranked_carriages = sorted(
-        by_carriage.items(), key=lambda kv: -affinity_row[kv[1][0]]
-    )
+    # 亲和度高的车厢排在前面（轮转时先被取到，因此拿到的候选更多）
+    ranked = sorted(by_carriage.items(), key=lambda kv: -affinity_row[kv[1][0]])
 
-    per_carriage = max(1, per_passenger // 3)
+    # 高亲和度车厢的"加厚"轮数：单靠轮转每节车厢各拿一样多，会让
+    # CP-SAT 在亲和度等价的方案之间随便挑一节车厢（实测挑了 15 车，
+    # 而 2 车在运营上更自然）。给排名靠前的车厢多几轮，
+    # 既保留"每节车厢都有代表"（硬绑定交集不丢），又让搜索偏向好车厢。
+    bonus_rounds = 3
+
     picked: list[int] = []
     seen: set[int] = set()
-    for _carriage, group in ranked_carriages:
-        if len(picked) >= per_passenger:
-            break
-        for slot in group[:per_carriage]:
+    for _carriage, group in ranked[:4]:
+        for slot in group[:bonus_rounds]:
             if slot in seen:
                 continue
             seen.add(slot)
             picked.append(slot)
+
+    depth = 0
+    # 轮转：第 0 轮每节车厢取最好的 1 个，第 1 轮取次好的 1 个……
+    while len(picked) < per_passenger:
+        added = False
+        for _carriage, group in ranked:
+            if depth >= len(group):
+                continue
+            slot = group[depth]
+            if slot in seen:
+                continue
+            seen.add(slot)
+            picked.append(slot)
+            added = True
             if len(picked) >= per_passenger:
                 break
-    # 兜底：若仍有空位（车厢数少），按全局亲和度补齐
-    if len(picked) < per_passenger:
-        rest = [slot for slot in allowed if slot not in seen]
-        rest.sort(key=lambda i: (-affinity_row[i], i))
-        picked.extend(rest[: per_passenger - len(picked)])
+        if not added:
+            break   # 所有车厢都取完了
+        depth += 1
     return sorted(picked, key=lambda i: (-affinity_row[i], i))
 
 
@@ -218,7 +282,9 @@ def solve_cpsat(
     if not seats:
         return _empty_solution(list(ctx.passengers), mode, start, ["余票为空，全部候补。"])
 
-    candidates = build_candidates(ctx, seats, config, per_passenger_candidates)
+    candidates = build_candidates(
+        ctx, seats, config, per_passenger_candidates, state=state
+    )
     fs = FastScorer(ctx.order, ctx.passengers, seats, config, ctx.unit_of)
     model = cp_model.CpModel()
     stats = _ModelBundle()
@@ -248,9 +314,38 @@ def solve_cpsat(
         if seat.col not in columns[seat.carriage]:
             columns[seat.carriage].append(seat.col)
 
+    def _indicator(name: str, variables: list[Any]) -> Any | None:
+        """构造"这一组座位里**至少有一个**被选中"的**布尔变量**。
+
+        为什么必须返回布尔变量而不是 ``sum(variables)``
+        ------------------------------------------------
+        这个 bug 直到装好 OR-Tools 才暴露：``sum(...)`` 在 0/1 个元素时是
+        **Python int**、在多个元素时是 ``SumArray`` —— 两者都没有 ``.Not()``，
+        所以 ``model.AddBoolOr([wa.Not(), ...])`` 直接抛
+        ``AttributeError: 'SumArray' object has no attribute 'Not'``。
+
+        更根本的问题是：CP-SAT 的 ``AddBoolOr`` 要求**字面量**（布尔变量或其取反），
+        而 ``sum`` 是线性表达式，语义上也不该当字面量用。正确做法是显式建一个
+        布尔变量并约束 ``ind <= sum(vars) <= n * ind``：
+        有任何一个被选中时 ``ind`` 必为真，全不选时必须为假。
+
+        这类错误只有**真正跑一次**才会发现 —— 静态检查、类型标注都看不出来。
+        """
+        if not variables:
+            return None
+        if len(variables) == 1:
+            return variables[0]
+        indicator = model.NewBoolVar(name)
+        total = sum(variables)
+        model.Add(total >= indicator)
+        model.Add(total <= len(variables) * indicator)
+        return indicator
+
     def carriage_indicator(pid: str, carriage: int) -> Any | None:
-        variables = [x[(pid, s)] for s in candidates.get(pid, []) if seats[s].carriage == carriage]
-        return sum(variables) if variables else None
+        variables = [
+            x[(pid, s)] for s in candidates.get(pid, []) if seats[s].carriage == carriage
+        ]
+        return _indicator(f"car_{pid}_{carriage}", variables)
 
     def column_indicator(pid: str, carriage: int, col: str) -> Any | None:
         variables = [
@@ -258,7 +353,7 @@ def solve_cpsat(
             for s in candidates.get(pid, [])
             if seats[s].carriage == carriage and seats[s].col == col
         ]
-        return sum(variables) if variables else None
+        return _indicator(f"col_{pid}_{carriage}_{col}", variables)
 
     # -- 约束 4/6：强绑定同车厢 + 硬核单元整体就座 -------------------------
     bound_pairs: list[tuple[str, str, BondType]] = []
@@ -276,9 +371,18 @@ def solve_cpsat(
                 right = carriage_indicator(b, carriage)
                 if left is None or right is None:
                     continue
-                if isinstance(left, int) and isinstance(right, int):
-                    continue
-                model.Add(left == right)
+                # **必须是双向蕴含，不能写 left == right**
+                #
+                # ``left`` 是"a 是否落在车厢 c"的 0/1 指示量。写
+                # ``model.Add(left == right)`` 看似在说"两人同车厢"，
+                # 实际允许了错误分配：若 a 选车厢 2、b 选车厢 3，
+                # 则 c=2 时 (1,0)、c=3 时 (0,1) —— 两个等式**都满足**，
+                # 但两人被拆到了不同车厢。实测结果正是如此：
+                # A1 在 03 车、儿童 C1 在 02 车，Tier 0 违规 = 1。
+                #
+                # 正确写法是双向蕴含：任一人落在该车厢，另一人必须也在。
+                model.AddImplication(left, right)
+                model.AddImplication(right, left)
             if bond is BondType.MANDATORY:
                 model.Add(
                     sum(x[(a, s)] for s in candidates[a]) == sum(x[(b, s)] for s in candidates[b])

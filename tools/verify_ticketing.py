@@ -81,13 +81,21 @@ try:
     status, body = call("/api/dev/reset", {"passengers": True})
     check(status == 200 and body["reset"], "重置成功")
     check(body["occupied_count"] == 0, f"无占用（{body['occupied_count']}）")
-    check(body["passenger_count"] == 16, f"乘车人 {body['passenger_count']} 位")
+    check(body["passenger_count"] == 16,
+          f"重置后预制乘车人 {body['passenger_count']} 位（仅开发者模式可见）")
+    check(body.get("user_passenger_count", 0) == 0,
+          f"重置后用户添加的乘车人清空（{body.get('user_passenger_count')}）")
 
     print()
-    print("=== 3) 乘车人：预制 + 类型目录 + 增删 ===")
-    status, body = call("/api/passengers")
-    check(status == 200 and body["count"] == 16, f"预制 {body.get('count')} 位")
-    check(body["empty"] is False, "列表非空 -> 界面不再引导添加")
+    print("=== 3) 乘车人：用户模式隔离 + 类型目录 + 增删 ===")
+    # **需求**：预制乘车人只给开发者模式，用户模式必须看不到
+    status, user_side = call("/api/passengers")
+    check(status == 200 and user_side["count"] == 0,
+          f"用户模式起始 0 位（{user_side.get('count')}）")
+    check(user_side["empty"] is True, "用户模式为空 -> 界面引导添加")
+    status, body = call("/api/passengers?scope=dev")
+    check(status == 200 and body["count"] == 16, f"开发者模式预制 {body.get('count')} 位")
+    check(body["empty"] is False, "开发者模式列表非空")
     types = {p["type_id"] for p in body["passengers"]}
     check(len(types) == 16, f"覆盖 {len(types)} 种人群类型")
     status, catalog = call("/api/passengers/types")
@@ -99,10 +107,19 @@ try:
     check(status == 201, f"添加返回 201（实际 {status}）")
     new_id = created["profile_id"]
     check(new_id == "C017", f"新编号不撞预制（{new_id}）")
+    # 新加的算"用户添加"，因此用户模式看得见、开发者模式也看得见
     status, body = call("/api/passengers")
-    check(body["count"] == 17, f"添加后 {body['count']} 位")
+    check(body["count"] == 1,
+          f"用户模式看得到自己添加的 1 位（{body['count']}）")
+    check(all(p["source"] != "preset" for p in body["passengers"]),
+          "用户模式返回的都是用户添加的，无预制")
+    status, body = call("/api/passengers?scope=dev")
+    check(body["count"] == 17, f"开发者模式 17 位（{body['count']}）")
     status, body = call("/api/passengers/remove", {"profile_id": new_id})
-    check(status == 200 and body["count"] == 16, "移除后回到 16 位")
+    check(status == 200 and body["count"] == 16,
+          f"移除后开发者模式回到 16 位（{body['count']}）")
+    status, body = call("/api/passengers")
+    check(body["count"] == 0, f"移除后用户模式回到 0 位（{body['count']}）")
 
     print()
     print("=== 4) 车次列表：有余票、无座位图 ===")

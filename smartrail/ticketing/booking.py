@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping, Sequence
 
-from ..models import Seat
+from ..models import BondType, Seat
 from .devstore import SOURCE_SOLD, DevStore
 from .passenger_store import PassengerProfile, build_profile_order, validate_selection
 
@@ -333,6 +333,28 @@ def book_ticket_order(
     result = engine.book(order, mode="smart")
 
     solution = result.solution
+    # ---- 自动分票：余票满足不了选座要求时，放松"必须在一起" ----
+    #
+    # 需求原文："仅当多人订单且当前余票无法满足用户选座要求时，
+    # 系统的自动分票逻辑才介入。"
+    #
+    # 早期实现**只做判定、不做动作**：``evaluate_preference`` 会算出
+    # "需要自动分票"并告诉用户"系统将自动分票"，但发牌时依然按硬绑定
+    # 求解，凑不出连座就把**整单**丢进候补 —— 实测 40 张散座的情况下
+    # 8 人单全部候补，一张票都没出。判定与动作脱节，是本项目反复出现的
+    # "说了会做、其实没做"。
+    #
+    # 分票做法：把强/硬绑定降级为软绑定重排一次，让人**各自有座**
+    # （可能分散在不同排甚至不同车厢），并如实告知。
+    auto_split_used = False
+    if (verdict.split_needed and order_size > 1
+            and not solution.assignments):
+        relaxed = replace(order, default_bond=BondType.SOFT, bonds={})
+        retry = engine.book(relaxed, mode="smart")
+        if retry.solution.assignments:
+            solution = retry.solution
+            auto_split_used = True
+
     assignments: dict[str, str] = {}
     for passenger_id, assignment in solution.assignments.items():
         assignments[passenger_id] = assignment.seat_id
@@ -343,7 +365,8 @@ def book_ticket_order(
                         if sid in seat_index})
     rows = sorted({(seat_index[sid].carriage, seat_index[sid].row)
                    for sid in assignments.values() if sid in seat_index})
-    actually_split = len(rows) > 1
+    # 是否"真的分票了"：既看实际排布，也看是否动用了分票重排
+    actually_split = len(rows) > 1 or auto_split_used
 
     # ---- 第一步：先给轮椅旅客分配**停放位独立编号** ----
     # 他们从 assignments 里被摘出来，因此**不会占用任何座位** ——
@@ -408,9 +431,36 @@ def book_ticket_order(
         "train_code": store.formation.train_code,
     }
     store.record_order(order_record)
+    # 未出票时**必须**给出原因。早期这里永远返回空列表，于是
+    # "一张票都没出"在界面上表现为**没有任何说明** —— 用户只看到没出票，
+    # 不知道是售罄、席别不对，还是系统故障。求解器其实已经把理由写在
+    # notes / verdict 里了，缺的只是把它送到调用方。
+    errors: list[str] = []
+    if not assignments:
+        if not order_record["waitlisted"]:
+            errors.append("本单没有可分配的座位。")
+        else:
+            free = store.remaining(class_code).get(class_code, 0)
+            if free == 0:
+                errors.append(
+                    f"{class_code} 已售罄，{order_size} 位乘客全部进入候补。"
+                )
+            elif len(order_record["waitlisted"]) == order_size:
+                errors.append(
+                    f"{class_code} 仅剩 {free} 张，无法容纳本单 {order_size} 人；"
+                    f"余票已打散，凑不出所需连座。"
+                    f"建议减少人数或改选其它席别。"
+                )
+            else:
+                errors.append(
+                    f"本单有 {len(order_record['waitlisted'])} 位乘客未能安排座位。"
+                )
+        if verdict.suggestion:
+            errors.append(verdict.suggestion)
+        errors.extend(list(getattr(solution, "notes", ()) or ()))
     return {
         "ok": len(assignments) > 0,
-        "errors": [],
+        "errors": errors,
         "verdict": verdict.to_dict(),
         "wheelchair": wheelchair.to_dict(),
         "order": order_record,

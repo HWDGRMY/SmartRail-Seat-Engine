@@ -129,6 +129,13 @@ PASSENGER_TYPES: tuple[dict[str, Any], ...] = (
     },
 )
 
+#: 乘客档案来源
+SOURCE_PRESET = "preset"
+"""内置预制档案：**只给开发者模式**做默认购票人，用户模式不可见。"""
+
+SOURCE_USER = "user"
+"""用户在购票页自己添加的乘车人。"""
+
 PASSENGER_TYPE_BY_ID: dict[str, dict[str, Any]] = {
     item["id"]: item for item in PASSENGER_TYPES
 }
@@ -166,6 +173,14 @@ class PassengerProfile:
     needs_caregiver: bool | None = None
     is_caregiver: bool | None = None
     declared_behavior: str = "unknown"
+    source: str = SOURCE_USER
+    """来源：``preset``（内置预制）或 ``user``（用户在购票页添加）。
+
+    这个区分是**需求要求的**：预制数据是给**开发者模式**做默认购票人的，
+    不是给用户看的。早期实现让用户模式的"选择乘车人"直接列出全部预制档案，
+    等于把调试数据塞给了旅客 —— 既不真实（旅客不该看到别人的身份证号），
+    也让"列表为空时引导添加"这条交互永远触发不到。
+    """
 
     @property
     def spec(self) -> dict[str, Any]:
@@ -228,6 +243,7 @@ class PassengerProfile:
             "is_caregiver": self.resolves_caregiver(),
             "support_needs": sorted(n.value for n in self.support_needs()),
             "price_ratio": self.price_ratio,
+            "source": self.source,
         }
 
     @classmethod
@@ -244,6 +260,7 @@ class PassengerProfile:
             needs_caregiver=payload.get("needs_caregiver"),
             is_caregiver=payload.get("is_caregiver"),
             declared_behavior=str(payload.get("declared_behavior") or "unknown"),
+            source=str(payload.get("source") or SOURCE_USER),
         )
 
 
@@ -307,7 +324,16 @@ class PassengerStore:
 
     # -- 查询 ----------------------------------------------------------
     def all(self) -> list[PassengerProfile]:
+        """全部档案（含预制）。**开发者模式**用。"""
         return list(self._profiles)
+
+    def presets(self) -> list[PassengerProfile]:
+        """仅内置预制档案（各类人群各一位）。"""
+        return [p for p in self._profiles if p.source == SOURCE_PRESET]
+
+    def user_added(self) -> list[PassengerProfile]:
+        """仅用户自己添加的乘车人。**用户模式**只应看到这些。"""
+        return [p for p in self._profiles if p.source != SOURCE_PRESET]
 
     def get(self, profile_id: str) -> PassengerProfile | None:
         for profile in self._profiles:
@@ -335,6 +361,9 @@ class PassengerStore:
             profile = replace(profile, profile_id=f"C{self._seq:03d}")
         if self.get(profile.profile_id) is not None:
             raise ValueError(f"乘车人编号已存在：{profile.profile_id}")
+        # 通过接口新增的一律算"用户添加"，即使调用方没显式给 source
+        if profile.source == SOURCE_PRESET:
+            profile = replace(profile, source=SOURCE_USER)
         self._profiles.append(profile)
         return profile
 
@@ -362,9 +391,9 @@ class PassengerStore:
 
 
 def build_default_profiles() -> list[PassengerProfile]:
-    """预制各类人群各一位。"""
+    """预制各类人群各一位（**仅供开发者模式**）。"""
     return [
-        PassengerProfile(profile_id=f"C{index + 1:03d}", **item)
+        PassengerProfile(profile_id=f"C{index + 1:03d}", source=SOURCE_PRESET, **item)
         for index, item in enumerate(DEFAULT_PROFILES)
     ]
 

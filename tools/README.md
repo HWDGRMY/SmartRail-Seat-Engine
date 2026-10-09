@@ -55,6 +55,7 @@ FATAL:mojo\public\cpp\platform\platform_channel.cc: Check failed: . : 拒绝访�
 | `draw_composer.py` | 画 OrderEditor（人员构成组单）的校验与出票结果 | `docs/screenshots/order-editor.png` |
 | `draw_composer_ui.py` | 画 OrderEditor 的**组件布局**（分组控件本身） | `docs/screenshots/order-editor-ui.png` |
 | `draw_wheelchair.py` | 画轮椅固定停放位的**独立编号**与"询问后出票"流程 | `docs/screenshots/wheelchair-bays.png` |
+| `draw_fragmentation.py` | 画"按顺序占 vs 打散占"的余票格局差异（为何压测不能按顺序占） | `docs/screenshots/fragmentation.png` |
 | `draw_ticket_first.py` | 画出票优先策略的 6 个场景对比 | `docs/screenshots/ticket-first.png` |
 | `verify_order_page.py` | 批量提交页的页面级验收（自带服务） | 控制台结论 |
 | `verify_composer.py` | OrderEditor 的页面级验收（自带服务） | 控制台结论 |
@@ -84,6 +85,7 @@ python tools/draw_order_submission.py --orders my.json
 python tools/draw_composer.py                         # 人员构成组单（8 张示例）
 python tools/draw_composer_ui.py                      # 组单界面的组件布局
 python tools/draw_wheelchair.py                       # 轮椅停放位独立编号
+python tools/draw_fragmentation.py                    # 压测占位方式对比
 python tools/draw_ticket_first.py
 ```
 
@@ -106,12 +108,14 @@ python tools/verify_served_pages.py   # 检查服务实际下发的六个页面
 **需求逐条验收**（需后端在跑）：
 
 ```bash
-python tools/verify_goal_12306.py     # 12306 重构需求的 12 项逐条核对
+python tools/verify_goal_12306.py     # 12306 重构需求的 16 项逐条核对
 ```
 
 这个脚本的存在理由：README 与实际代码容易各说各话，而**需求条目**
-更容易被漏掉。它把需求原文拆成 12 条可机器验证的断言，
+更容易被漏掉。它把需求原文拆成 16 条可机器验证的断言，
 全部针对运行中的服务，而不是读代码猜测意图。
+其中第 14~16 项专门守"预制乘车人只给开发者模式""压测必须打散占位"
+"多人组合与自动分票"这三条过程性要求 —— 它们最容易被后续改动悄悄破坏。
 
 这两个脚本的由来见下面"为什么必须真跑一遍 JS"。
 
@@ -123,7 +127,7 @@ python tools/repo_overview.py     # 提交内容构成 + LICENSE 字节一致性
 python tools/count_files.py       # 各目录文件数/行数（改文档时取数）
 ```
 
-> `verify_readme.py` 的存在理由：README 里的"127 条断言""49 个文件"这类数字
+> `verify_readme.py` 的存在理由：README 里的"150 条断言""57 个文件"这类数字
 > **会随代码改动过期**，而人不会每次改代码都回去改文档。与其靠自觉，
 > 不如让机器每次都能验一遍 —— 这也是本项目"配置卫生不变量"思路的延伸。
 

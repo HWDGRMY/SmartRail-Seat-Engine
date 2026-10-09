@@ -418,8 +418,8 @@ function renderSelected() {
   const box = $("selectedPax");
   if (!selected.length) {
     box.innerHTML = `<div class="notice info">
-      请先<b>添加乘车人</b>才能提交订单。点右上角「+ 选择乘车人」，
-      列表为空时可直接添加；也可以只勾选已有的预制乘车人。</div>`;
+      请先<b>添加乘车人</b>才能提交订单。点右上角「+ 选择乘车人 / 添加乘车人」，
+      按人群类型添加。本页<b>不预置任何乘车人</b> —— 请填写真实信息。</div>`;
     $("paxHint").textContent = "";
     return;
   }
@@ -452,7 +452,8 @@ function renderSelected() {
 function renderPickList() {
   const box = $("pickList");
   if (!allPassengers.length) {
-    box.innerHTML = `<div class="empty">乘车人列表为空，请先添加乘车人。</div>`;
+    box.innerHTML = `<div class="empty">还没有乘车人。<br>
+      点上方「+ 添加乘车人」按人群类型添加 —— 添加后即可勾选。</div>`;
     return;
   }
   box.innerHTML = allPassengers.map((p) => {

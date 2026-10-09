@@ -370,7 +370,9 @@ function renderOrders() {
 }
 
 async function renderPassengers() {
-  const data = await api("/api/passengers");
+  // 开发者模式取**全部**档案（含内置预制）；用户模式走同一个接口的
+  // 默认 scope=user，只看得到用户自己添加的人。
+  const data = await api("/api/dev/passengers");
   $("paxCount").textContent = `共 ${data.count} 位（各类人群各一位）`;
   $("passengers").innerHTML = (data.passengers || []).map((p) => `
     <div class="paxline">

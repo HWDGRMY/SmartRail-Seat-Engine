@@ -90,7 +90,7 @@ def main() -> int:
     call("/api/dev/reset", {"passengers": True})
     trains = call("/api/trains")["trains"]
     seat_row = call("/api/trains/seat-row?class_code=" + urllib.parse.quote("二等座"))
-    passengers = call("/api/passengers")["passengers"]
+    passengers = call("/api/dev/passengers")["passengers"]
 
     # 下两张订单：一张单人（带静音偏好），一张 3 人
     single = call("/api/tickets/book", {

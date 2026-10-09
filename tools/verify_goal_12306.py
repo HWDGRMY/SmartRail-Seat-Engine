@@ -63,10 +63,19 @@ check(status == 200 and len(trains["trains"]) == 3,
 check(trains["trains"][0]["train_code"] == "G25", "含 G25 大标杆")
 
 print()
-print("=== 目标 2：选择乘车人 ===")
+print("=== 目标 2：选择乘车人（用户模式不预置乘车人）===")
 check("选择乘车人" in user, "页面含「选择乘车人」入口")
-status, pax = call("/api/passengers")
-check(status == 200 and pax["count"] == 16, f"预制乘车人 {pax.get('count')} 位")
+# **需求**：预制乘车人是给开发者模式的，用户模式必须看不到
+status, user_pax = call("/api/passengers")
+check(status == 200 and user_pax["count"] == 0,
+      f"用户模式起始 0 位乘车人（{user_pax.get('count')}）")
+check(user_pax["empty"] is True, "用户模式列表为空 -> 引导用户添加")
+status, dev_pax = call("/api/passengers?scope=dev")
+check(dev_pax["count"] == 16, f"开发者模式可见预制 {dev_pax.get('count')} 位")
+status, pax = call("/api/dev/passengers")
+check(pax["count"] == 16, f"/api/dev/passengers 返回 {pax.get('count')} 位")
+check("选择乘车人" in user and "预制" not in user.split("选择乘车人")[0][-200:],
+      "用户模式页面不向旅客展示预制档案")
 status, types = call("/api/passengers/types")
 check(len(types["types"]) == 16, f"人群类型 {len(types['types'])} 种")
 status, empty = call("/api/trains/evaluate",
@@ -142,7 +151,7 @@ check("type=\"range\"" in dev, "开发者模式含余票滑杆控件")
 check("手动锁定" in dev and "用户已售" in dev,
       "座位图图例区分「用户已售」与「手动锁定」")
 status, snap = call("/api/dev/snapshot")
-status, pax2 = call("/api/passengers")
+status, pax2 = call("/api/passengers?scope=dev")
 kinds = {p["type_id"] for p in pax2["passengers"]}
 check(len(kinds) == 16 and pax2["count"] == 16,
       f"各类人群各一位（{pax2['count']} 位 / {len(kinds)} 种）")
@@ -240,7 +249,7 @@ check(sum(snap["remaining"].values()) == 1238,
 
 # 轮椅旅客优先分配停放位，且票面写的是**停放位编号**，不占座位
 call("/api/dev/reset", {"passengers": True})
-status, pax_all = call("/api/passengers")
+status, pax_all = call("/api/passengers?scope=dev")
 wheel_id = next(p["profile_id"] for p in pax_all["passengers"]
                 if p["type_id"] == "wheelchair")
 seats_before = call("/api/dev/snapshot")[1]["remaining"]["二等座"]
@@ -271,9 +280,98 @@ check(body["order"]["passengers"][0]["seat_id"] not in bay_ids,
 call("/api/dev/reset", {"passengers": True})
 
 print()
+print("=== 目标 14：预制乘车人只给开发者模式 ===")
+status, user_scope = call("/api/passengers")
+check(user_scope["count"] == 0, f"用户模式 0 位（{user_scope['count']}）")
+check(user_scope["empty"] is True, "用户模式为空 -> 引导添加")
+status, dev_scope = call("/api/passengers?scope=dev")
+check(dev_scope["count"] == 16, f"开发者模式 16 位（{dev_scope['count']}）")
+check(all(p["source"] == "preset" for p in dev_scope["passengers"]),
+      "预制档案带 source=preset 标记")
+check("选择乘车人" in user,
+      "用户模式仍有「选择乘车人」入口（但列表为空）")
+status, added = call("/api/passengers/add", {"name": "验收用户", "type_id": "adult"})
+check(status == 201, f"添加乘车人返回 201（实际 {status}）")
+status, user_scope2 = call("/api/passengers")
+check(user_scope2["count"] == 1 and user_scope2["passengers"][0]["source"] == "user",
+      f"添加后用户模式看到自己的 1 位（{user_scope2['count']}）")
+call("/api/passengers/remove", {"profile_id": added["profile_id"]})
+
+print()
+print("=== 目标 15：压测不按顺序占座（余票必须碎片化）===")
+
+
+def fragmentation(class_code: str = "二等座") -> dict:
+    snap = call("/api/dev/snapshot")[1]
+    by_row: dict[tuple[int, int], list[int]] = {}
+    for seat in snap["seats"]:
+        if seat["class_code"] != class_code or seat["occupied"]:
+            continue
+        by_row.setdefault((seat["carriage"], seat["row"]), []).append(
+            _col_index(seat["col"])
+        )
+    runs: list[int] = []
+    for group in by_row.values():
+        group.sort()
+        run = 1
+        for left, right in zip(group, group[1:]):
+            run = run + 1 if right == left + 1 else 1
+            if right != left + 1:
+                runs.append(1)
+        runs.append(run)
+    return {"rows": len(by_row), "longest": max(runs, default=0)}
+
+
+def _col_index(col: str) -> int:
+    return "ABCDF".index(col) if col in "ABCDF" else 0
+
+
+call("/api/dev/reset", {"passengers": True})
+call("/api/dev/remaining", {"class_code": "二等座", "remaining": 100})
+frag = fragmentation()
+check(frag["rows"] >= 50,
+      f"100 张余票散布在 {frag['rows']} 个排（顺序占只会有约 21 排）")
+check(frag["longest"] <= 2,
+      f"最长连座 {frag['longest']} <= 2（顺序占会留 5 连座）")
+check(frag["rows"] > 21, "碎片化确实生效（与顺序占形成可区分的差距）")
+
+print()
+print("=== 目标 16：多人组合 × 自动分票（顺序处理，非并发）===")
+call("/api/dev/reset", {"passengers": True})
+status, added_adult = call("/api/passengers/add",
+                           {"name": "组合甲", "type_id": "adult"})
+status, added_child = call("/api/passengers/add",
+                           {"name": "组合乙", "type_id": "child"})
+combo_ids = [added_adult["profile_id"], added_child["profile_id"]]
+call("/api/dev/remaining", {"class_code": "二等座", "remaining": 30})
+status, combo = call("/api/tickets/book",
+                     {"class_code": "二等座", "profile_ids": combo_ids,
+                      "order_id": "COMBO-1"})
+check(status == 200 and combo["ok"], "2 人组合单出票成功")
+check(combo["tier0"] == 0, f"Tier 0 = 0（{combo['tier0']}）")
+check(combo["order"]["seated"] == 2, f"2 人全部出票（{combo['order']['seated']}）")
+check(combo["verdict"]["largest_run"] <= 2,
+      f"余票最长连座 {combo['verdict']['largest_run']}（碎片化）")
+# 席别硬约束：商务座单不能出二等座
+status, biz = call("/api/tickets/book",
+                   {"class_code": "商务座", "profile_ids": [added_adult["profile_id"]],
+                    "order_id": "COMBO-BIZ"})
+if biz["ok"]:
+    check(biz["order"]["passengers"][0]["class_code"] == "商务座",
+          f"商务座单席别正确（{biz['order']['passengers'][0]['class_code']}）")
+# 满座时不静默失败
+call("/api/dev/remaining", {"class_code": "二等座", "remaining": 0})
+status, full = call("/api/tickets/book",
+                    {"class_code": "二等座", "profile_ids": combo_ids,
+                     "order_id": "COMBO-FULL"})
+check(not full["ok"], "满座时不出票")
+check(bool(full["errors"]), f"满座时给出原因：{full['errors'][:1]}")
+call("/api/dev/reset", {"passengers": True})
+
+print()
 if problems:
     print(f"失败 {len(problems)} 项：")
     for item in problems:
         print("  -", item)
     raise SystemExit(1)
-print("本轮目标 13 项逐条验收全部通过。")
+print("本轮目标 16 项逐条验收全部通过。")

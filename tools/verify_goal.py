@@ -75,7 +75,11 @@ result = subprocess.run(
 actual = int(re.search(r"(\d+)\s*passed", result.stdout).group(1))
 declared = int(re.findall(r"\*\*(\d+) 条断言全部通过\*\*", readme)[0])
 note(actual == declared, f"断言数声明与实测一致（{declared}）")
-note("未运行验证" in readme, "V2 未运行验证已如实标注")
+# V2 已从"缺依赖未运行"变为"已实跑"：核对新的如实表述，
+# 并确认旧的过时说法没有残留（两段自相矛盾的话比没有更糟）。
+note("已实跑" in readme, "V2 已实跑如实标注")
+note("未运行验证" not in readme and "从未真正运行过" not in readme,
+     "无过时的 V2 表述")
 note("口径更正说明" in readme, "V3 口径更正说明已保留")
 selfcheck = subprocess.run(
     [str(ROOT / ".venv/Scripts/python.exe"), "-B", "-u", "tools/verify_readme.py"],

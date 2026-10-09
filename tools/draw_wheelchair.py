@@ -88,7 +88,7 @@ class Canvas:
 def main() -> int:
     # 干净状态，然后连下 5 张轮椅单（第 5 张触发询问）
     call("/api/dev/reset", {"passengers": True})
-    passengers = call("/api/passengers")["passengers"]
+    passengers = call("/api/dev/passengers")["passengers"]
     wheel = next(p for p in passengers if p["type_id"] == "wheelchair")
     plain = next(p for p in passengers if p["type_id"] == "adult")
 

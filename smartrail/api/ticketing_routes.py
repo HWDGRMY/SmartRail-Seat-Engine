@@ -39,12 +39,28 @@ def passenger_types(payload: dict[str, Any]) -> tuple[int, Any]:
 
 
 def list_passengers(payload: dict[str, Any]) -> tuple[int, Any]:
+    """乘车人列表。
+
+    ``scope`` 区分两种用途（**这是需求要求的隔离**）：
+
+    * ``user``（默认）：只返回**用户自己添加的**乘车人。用户模式用它，
+      首次进入必然为空 -> 触发"请先添加乘车人"的引导。
+    * ``dev``：返回全部，含内置预制档案（各类人群各一位）。
+      **预制数据是给开发者模式做默认购票人的，不该给旅客看到**。
+    """
     store = ticketing.get_passenger_store()
+    scope = str(payload.get("scope") or "user").lower()
+    if scope == "dev":
+        profiles = store.all()
+    else:
+        profiles = store.user_added()
     return 200, {
-        "passengers": [profile.to_dict() for profile in store.all()],
-        "count": len(store.all()),
+        "scope": scope,
+        "passengers": [profile.to_dict() for profile in profiles],
+        "count": len(profiles),
+        "preset_count": len(store.presets()),
         # 界面要据此判断"是否引导用户添加乘车人"
-        "empty": not store.all(),
+        "empty": not profiles,
     }
 
 
@@ -156,6 +172,23 @@ def dev_snapshot(payload: dict[str, Any]) -> tuple[int, Any]:
     return 200, store.snapshot()
 
 
+def dev_passengers(payload: dict[str, Any]) -> tuple[int, Any]:
+    """开发者模式的乘车人列表：**含内置预制档案**。
+
+    用户模式走同一个接口的 ``scope=user``，只看得到自己添加的人。
+    """
+    store = ticketing.get_passenger_store()
+    profiles = store.all()
+    return 200, {
+        "scope": "dev",
+        "passengers": [profile.to_dict() for profile in profiles],
+        "count": len(profiles),
+        "preset_count": len(store.presets()),
+        "user_count": len(store.user_added()),
+        "empty": not profiles,
+    }
+
+
 def dev_set_remaining(payload: dict[str, Any]) -> tuple[int, Any]:
     """调整某席别的模拟余票，**实时**影响用户模式。"""
     store = ticketing.get_dev_store()
@@ -219,6 +252,8 @@ def dev_reset(payload: dict[str, Any]) -> tuple[int, Any]:
         "occupied_count": len(store.occupied),
         "order_count": len(store.orders),
         "passenger_count": len(ticketing.get_passenger_store().all()),
+        # 用户模式只应看到用户添加的；重置后应为 0
+        "user_passenger_count": len(ticketing.get_passenger_store().user_added()),
     }
 
 
@@ -230,6 +265,7 @@ GET_ROUTES: dict[str, Handler] = {
     "/api/trains/seat-row": seat_rows,
     "/api/tickets/orders": list_orders,
     "/api/dev/snapshot": dev_snapshot,
+    "/api/dev/passengers": dev_passengers,
 }
 
 #: POST 路由
@@ -253,6 +289,7 @@ __all__ = [
     "add_passenger",
     "book",
     "dev_fill",
+    "dev_passengers",
     "dev_reset",
     "dev_set_remaining",
     "dev_snapshot",

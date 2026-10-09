@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -47,6 +48,53 @@ class Occupancy:
             "passenger_name": self.passenger_name,
             "color_index": self.color_index,
         }
+
+
+def _scatter_order(
+    seats: Sequence[Any], rng: random.Random, adjacent_ratio: float = 0.3
+) -> list[Any]:
+    """把座位排成"像真实售票那样"的占用顺序。
+
+    为什么不能按顺序占
+    ------------------
+    早期实现直接取"前 N 个座位"当已售，结果**余票永远是车厢末尾一整块连续座位** ——
+    于是"余票紧张时凑不出连座、需要自动分票"这个最该被压测到的场景
+    **永远触发不了**：随便一单都能在那一大块里坐下。
+    这不是"少测了一个边界"，而是**把要测的东西测没了**。
+
+    真实售票是散开的：多数人零散买、少数人（家庭/同行）买连座。
+    因此这里按 ``adjacent_ratio`` 的比例生成"相邻对"，
+    其余**随机打散**到全列各车厢，形成真实的碎片化余票格局。
+    """
+    pool = list(seats)
+    rng.shuffle(pool)
+    ordered: list[Any] = []
+    used: set[str] = set()
+
+    # 先按比例制造"相邻座位"（模拟同行旅客买连座）
+    quota = int(len(pool) * max(0.0, min(1.0, adjacent_ratio)))
+    if quota >= 2:
+        by_row: dict[tuple[int, int], list[Any]] = {}
+        for seat in pool:
+            by_row.setdefault((seat.carriage, seat.row), []).append(seat)
+        rows = list(by_row.values())
+        rng.shuffle(rows)
+        made = 0
+        for group in rows:
+            if made >= quota:
+                break
+            group = sorted(group, key=lambda s: s.col_index)
+            for left, right in zip(group, group[1:]):
+                if made >= quota:
+                    break
+                if left.seat_id in used or right.seat_id in used:
+                    continue
+                ordered.extend((left, right))
+                used.update({left.seat_id, right.seat_id})
+                made += 2
+    # 其余按打乱后的顺序补齐（保证覆盖率 100% 且分布随机）
+    ordered.extend(seat for seat in pool if seat.seat_id not in used)
+    return ordered
 
 
 @dataclass
@@ -238,13 +286,21 @@ class DevStore:
 
     # -- 开发者操作 ----------------------------------------------------
     def set_remaining(
-        self, class_code: str, target: int, *, from_front: bool = True
+        self,
+        class_code: str,
+        target: int,
+        *,
+        from_front: bool = False,
+        seed: int = 20261019,
     ) -> dict[str, Any]:
         """把某席别的余票调整到 ``target``。
 
-        实现方式是**占用/释放最靠前的座位**（``from_front``），
-        这样开发者看到的就是"前面一段被锁掉"，符合直觉，
-        也便于用座位图人工核对。
+        默认 **``from_front=False``，即打散占用** —— 这样余票是碎片化的，
+        能真实压测"凑不出连座 -> 自动分票"。设为 ``True`` 则退化为
+        "占用最靠前的座位"，便于人工核对座位图。
+
+        早期默认是 ``from_front=True``，结果是余票永远为车厢末尾一整块，
+        最该被测到的分票场景**永远触发不到**。
         """
         candidates = [
             seat for seat in self.formation.seats if seat.class_code == class_code
@@ -271,11 +327,15 @@ class DevStore:
         # 真源优先：让"已售"保持原样，只调整手动锁定的部分
         manual_now_ids = {seat.seat_id for seat in manual_now}
         free = [seat for seat in candidates if seat.seat_id not in self.occupied]
+        if not from_front:
+            free = _scatter_order(free, random.Random(seed))
 
         # 需要更多手动占用
         if manual_needed > len(manual_now):
             need = manual_needed - len(manual_now)
-            pool = free if from_front else list(reversed(free))
+            pool = free if not from_front else free
+            if from_front:
+                pool = list(free)
             for seat in pool[:need]:
                 self.occupied[seat.seat_id] = Occupancy(
                     seat_id=seat.seat_id, source=SOURCE_MANUAL
@@ -283,7 +343,12 @@ class DevStore:
         # 需要更少手动占用
         elif manual_needed < len(manual_now):
             drop = len(manual_now) - manual_needed
-            ordered = sorted(manual_now_ids, reverse=not from_front)
+            # 释放时同样尽量散开：随机挑，而不是从排头砍
+            ordered = sorted(manual_now_ids)
+            if not from_front:
+                random.Random(seed).shuffle(ordered)
+            elif not from_front:
+                ordered = list(reversed(ordered))
             for seat_id in ordered[:drop]:
                 self.occupied.pop(seat_id, None)
 
@@ -295,16 +360,70 @@ class DevStore:
             "manual_locked": sum(
                 1 for item in self.occupied.values() if item.source == SOURCE_MANUAL
             ),
+            # 碎片化程度：能连坐的排数。压测时最关键的一个数 ——
+            # 余票数量相同但"能否凑出 N 连座"可以完全不同。
+            "fragmentation": self.fragmentation(class_code),
         }
 
-    def fill_to_ratio(self, ratio: float) -> dict[str, Any]:
-        """把整列车卖到指定上座率（开发者压测用）。"""
+    def fragmentation(self, class_code: str | None = None) -> dict[str, Any]:
+        """余票的碎片化程度：各车厢的"最长连续空座"分布。
+
+        为什么需要这个指标：同样剩 100 张票，可能是"一整排 100 连座"，
+        也可能是"100 个互不相邻的单座"。前者任何订单都能满足，
+        后者连 2 人同行都要分票 —— 只报"余票 100"会完全掩盖这个差别。
+
+        **必须按物理列位判断相邻**：早期实现按 ``col_index`` 排序后
+        只数"有几个自由座位"，没有检查下标是否真正相邻，于是
+        "A 座 + D 座"这种隔着过道的组合也被算成 2 连座。
+        实测该 bug 会把最长连座从 2 报成 5，直接让这个指标失效 ——
+        而它正是判断"是否需要自动分票"的依据。
+        """
+        by_row: dict[tuple[int, int], list[int]] = {}
+        for seat in self.formation.seats:
+            if class_code is not None and seat.class_code != class_code:
+                continue
+            if seat.seat_id in self.occupied:
+                continue
+            by_row.setdefault((seat.carriage, seat.row), []).append(seat.col_index)
+        runs: list[int] = []
+        for columns in by_row.values():
+            columns.sort()
+            run = 1
+            for left, right in zip(columns, columns[1:]):
+                if right == left + 1:
+                    run += 1
+                else:
+                    runs.append(run)
+                    run = 1
+            runs.append(run)
+        return {
+            "rows_with_free_seats": len(by_row),
+            "longest_run": max(runs, default=0),
+            "runs_at_least_2": sum(1 for r in runs if r >= 2),
+            "runs_at_least_3": sum(1 for r in runs if r >= 3),
+            "total_runs": len(runs),
+        }
+
+    def fill_to_ratio(
+        self, ratio: float, *, scatter: bool = True, seed: int = 20261019
+    ) -> dict[str, Any]:
+        """把整列车卖到指定上座率（开发者压测用）。
+
+        ``scatter=True``（默认）按真实售票的样子**打散**占用，
+        从而产生碎片化余票 —— 这正是"多人订单凑不出连座、需要自动分票"
+        的触发条件。``scatter=False`` 保留旧的"按顺序占"行为，
+        便于人工核对座位图。
+
+        默认带固定 ``seed``，保证同一上座率每次得到同一份布局（可复现）。
+        """
         ratio = max(0.0, min(1.0, float(ratio)))
         seats = list(self.formation.seats)
         target = int(round(len(seats) * ratio))
         current = len(self.occupied)
         if current < target:
             free = [seat for seat in seats if seat.seat_id not in self.occupied]
+            if scatter:
+                free = _scatter_order(free, random.Random(seed))
             for seat in free[: target - current]:
                 self.occupied[seat.seat_id] = Occupancy(
                     seat_id=seat.seat_id, source=SOURCE_PRESET

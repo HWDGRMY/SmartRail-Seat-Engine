@@ -152,12 +152,28 @@ if log_path.exists():
     note("### 坑点" not in readme, "README 不再展开踩坑正文")
 
 print()
-print("=== 6) 反面结论是否如实保留 ===")
+print("=== 6) 反面结论 / 关键结论是否如实保留 ===")
+# V2 已从"缺依赖未运行"变为"已实跑"：这里改为核对**新的**如实表述，
+# 并额外确认旧的过时说法没有残留（否则读者会看到自相矛盾的两段话）。
 for token, label in (
-    ("未运行验证", "V2 CP-SAT 未运行验证"),
+    ("已实跑", "V2 CP-SAT 已实跑"),
+    ("AddBoolOr", "V2 记录的指示量缺陷"),
+    ("AddImplication", "V2 记录的同车厢蕴含修正"),
     ("口径更正说明", "V3 口径更正说明"),
     ("未替代 V1+V2", "V3 未替代结论"),
     ("环境限制说明", "环境限制章节"),
+):
+    note(token in readme, label)
+stale = [
+    token for token in ("未运行验证", "从未真正运行过", "本机无法安装 `ortools`")
+    if token in readme
+]
+note(not stale, f"无过时的 V2 表述（残留：{stale or '无'}）")
+# 压测与并发口径
+for token, label in (
+    ("不在本系统责任范围内", "并发不在责任范围的声明"),
+    ("压测必须打散占位", "压测打散占位说明"),
+    ("自动分票：判定与动作必须一致", "自动分票说明"),
 ):
     note(token in readme, label)
 

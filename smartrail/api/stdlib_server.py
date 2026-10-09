@@ -29,7 +29,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from ..credit import CreditLedger
 from ..engine import SeatEngine
@@ -75,6 +75,19 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _query_params(self) -> dict[str, Any]:
+        """把 ``?a=1&b=2`` 解析成 ``{"a": "1", "b": "2"}``。"""
+        parsed = urlparse(self.path)
+        if not parsed.query:
+            return {}
+        params: dict[str, Any] = {}
+        for chunk in parsed.query.split("&"):
+            if not chunk:
+                continue
+            key, _, value = chunk.partition("=")
+            params[unquote(key)] = unquote(value)
+        return params
+
     def _send_json(self, status: int, payload: Any) -> None:
         self._send(status, _json_bytes(payload), "application/json; charset=utf-8")
 
@@ -112,7 +125,13 @@ class Handler(BaseHTTPRequestHandler):
             elif path in ticketing_routes.TICKETING_PAGES:
                 self._send_page(ticketing_routes.TICKETING_PAGES[path])
             elif path in ticketing_routes.GET_ROUTES:
-                self._send_json(200, ticketing_routes.GET_ROUTES[path]({})[1])
+                # GET 也要带查询参数：早期这里固定传 {}，导致
+                # ``/api/passengers?scope=dev`` 这类参数**永远传不进处理器**，
+                # 处理器只能看到默认值 —— 表现为"参数写了但没生效"。
+                self._send_json(
+                    200,
+                    ticketing_routes.GET_ROUTES[path](self._query_params())[1],
+                )
             elif path == "/api/snapshot":
                 with STATE.lock:
                     self._send_json(200, STATE.engine.snapshot())
