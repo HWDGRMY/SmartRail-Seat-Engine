@@ -104,20 +104,55 @@ def test_bays_do_not_consume_seat_inventory() -> None:
 
 
 def test_wheelchair_prefers_bays() -> None:
-    """轮椅旅客优先拿到停放位（4 张单依次占满）。"""
-    print("[轮椅位] 优先分配")
+    """轮椅旅客优先拿到停放位，且票面写的是**停放位独立编号**。"""
+    print("[轮椅位] 优先分配 + 独立编号")
     store = reset_dev_store()
     pax = reset_passenger_store()
-    slots = store.bay_slot_ids()
+    bay_ids = store.bay_ids()
+    expected_order = ["04车W1", "04车W2", "12车W1", "12车W2"]
     for index in range(1, 5):
         before = evaluate_wheelchair_bays(store, pax.by_ids([WHEELCHAIR_PROFILE]))
         check(not before.needs_confirmation,
               f"第 {index} 张：空位 {before.bays_free} -> 不需询问")
         result = book_ticket_order(store, pax.by_ids([WHEELCHAIR_PROFILE]),
                                    class_code="二等座", order_id=f"W{index}")
-        seat_id = result["order"]["passengers"][0]["seat_id"]
-        check(seat_id in slots, f"第 {index} 张落在停放位（{seat_id}）")
+        passenger = result["order"]["passengers"][0]
+        want = expected_order[index - 1]
+        check(passenger["seat_id"] == want,
+              f"第 {index} 张票面是停放位编号（{passenger['seat_id']}）")
+        check(passenger["wheelchair_bay"] == want,
+              f"wheelchair_bay 字段一致（{passenger['wheelchair_bay']}）")
+        check(passenger["seat_id"] in bay_ids, "编号属于停放位集合")
+        check("-" not in passenger["seat_id"] and "排" not in passenger["seat_id"],
+              "票面不含座位号/排号")
+        # 内部落点仅供工程排查，不能等于票面编号
+        check(passenger["internal_seat_id"] != passenger["seat_id"],
+              f"内部落点（{passenger['internal_seat_id']}）与票面编号不同")
     check(len(store.free_bays()) == 0, "4 张单后停放位全部占用")
+    check(sorted(store.occupied_bay_ids()) == sorted(expected_order),
+          f"按编号记录占用：{sorted(store.occupied_bay_ids())}")
+
+
+def test_bays_do_not_consume_seat_inventory_at_all() -> None:
+    """停放位不吃座位票额：4 位轮椅旅客不应减少任何座位余票。"""
+    print("[轮椅位] 完全不吃座位票额")
+    store = reset_dev_store()
+    pax = reset_passenger_store()
+    before = store.remaining("二等座")["二等座"]
+    for index in range(1, 5):
+        book_ticket_order(store, pax.by_ids([WHEELCHAIR_PROFILE]),
+                          class_code="二等座", order_id=f"NB{index}")
+    after = store.remaining("二等座")["二等座"]
+    check(after == before,
+          f"4 位轮椅旅客后二等座余票不变（{before} -> {after}）")
+    check(len(store.occupied) == 0,
+          f"座位占用数为 0（实际 {len(store.occupied)}）")
+    check(len(store.occupied_bay_ids()) == 4, "停放位占用 4 个")
+    # 第 5 位走普通座位，这时才该扣座位
+    book_ticket_order(store, pax.by_ids([WHEELCHAIR_PROFILE]),
+                      class_code="二等座", order_id="NB5")
+    check(store.remaining("二等座")["二等座"] == before - 1,
+          "第 5 位（普通坐票）才扣 1 个座位")
 
 
 def test_overflow_asks_then_issues() -> None:
@@ -139,9 +174,11 @@ def test_overflow_asks_then_issues() -> None:
     result = book_ticket_order(store, pax.by_ids([WHEELCHAIR_PROFILE]),
                                class_code="二等座", order_id="OVER1")
     check(result["ok"], "仍然出票（不静默拒票）")
-    seat_id = result["order"]["passengers"][0]["seat_id"]
-    check(seat_id not in store.bay_slot_ids(),
-          f"发的是普通座位（{seat_id}）")
+    passenger = result["order"]["passengers"][0]
+    check(passenger["seat_id"] not in store.bay_ids(),
+          f"发的是普通座位（{passenger['seat_id']}）")
+    check(passenger.get("wheelchair_bay", "") == "",
+          "未分配停放位")
     check(result["wheelchair"]["needs_confirmation"], "订单里记录需要确认")
 
 
@@ -248,19 +285,40 @@ def test_helper_functions_agree() -> None:
 
 
 def test_dev_snapshot_marks_bays() -> None:
-    """开发者座位图标出停放位。"""
+    """开发者座位图：停放位独立列出，座位只标"紧邻"。"""
     print("[轮椅位] 座位图标记")
     store = reset_dev_store()
     snapshot = store.snapshot()
-    marked = {s["seat_id"] for s in snapshot["seats"] if s.get("wheelchair_bay")}
-    check(marked == set(store.bay_slot_ids()),
-          f"座位图标出 4 个停放位（{sorted(marked)}）")
     summary = snapshot["wheelchair_bays"]
     check(summary["total"] == 4 and summary["free"] == 4,
           f"总览 4 个全空（{summary['total']}/{summary['free']}）")
+    ids = sorted(bay["bay_id"] for bay in summary["bays"])
+    check(ids == ["04车W1", "04车W2", "12车W1", "12车W2"],
+          f"停放位独立编号 {ids}")
     cars = {c["number"]: c for c in snapshot["carriages"]}
     check(cars[4]["wheelchair_bays"] == 2 and cars[12]["wheelchair_bays"] == 2,
           f"04/12 车各 2 个（{cars[4]['wheelchair_bays']}/{cars[12]['wheelchair_bays']}）")
+    # 座位表里**不应**再有"这个座位就是停放位"的标记
+    check(not any(s.get("wheelchair_bay") for s in snapshot["seats"]),
+          "座位表不再把座位标成停放位")
+    slots = [s["seat_id"] for s in snapshot["seats"] if s.get("bay_slot")]
+    check(len(slots) == 4, f"仅标出 4 个『紧邻停放位』的座位（{slots}）")
+    check(all(not s["occupied"] for s in snapshot["seats"]
+              if s.get("bay_slot")), "紧邻座位仍是可售状态")
+
+
+def test_bay_occupancy_survives_reset() -> None:
+    """重置系统要同时清空停放位占用。"""
+    print("[轮椅位] 重置清空停放位")
+    store = reset_dev_store()
+    pax = reset_passenger_store()
+    for index in range(1, 3):
+        book_ticket_order(store, pax.by_ids([WHEELCHAIR_PROFILE]),
+                          class_code="二等座", order_id=f"R{index}")
+    check(len(store.occupied_bay_ids()) == 2, "占用 2 个停放位")
+    store = reset_dev_store()
+    check(len(store.occupied_bay_ids()) == 0, "重置后停放位清空")
+    check(len(store.free_bays()) == 4, "4 个停放位全部空闲")
 
 
 def main() -> int:
@@ -268,12 +326,14 @@ def main() -> int:
         test_two_bays_per_accessible_carriage,
         test_bays_do_not_consume_seat_inventory,
         test_wheelchair_prefers_bays,
+        test_bays_do_not_consume_seat_inventory_at_all,
         test_overflow_asks_then_issues,
         test_large_wheelchair_order_counts_shortfall,
         test_ordinary_passenger_is_pushed_away,
         test_sold_out_is_service_not_failure,
         test_helper_functions_agree,
         test_dev_snapshot_marks_bays,
+        test_bay_occupancy_survives_reset,
     ]
     if UNDER_PYTEST:
         for test in tests:

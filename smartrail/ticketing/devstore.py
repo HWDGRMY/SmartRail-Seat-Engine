@@ -55,8 +55,19 @@ class DevStore:
 
     formation: TrainFormation
     occupied: dict[str, Occupancy] = field(default_factory=dict)
+    #: 已占用的轮椅停放位，键是**对外编号**（``04车W1``），与座位占用互不影响
+    occupied_bays: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: 停放位的内部落点座位。它们**不是票务占用**（不减少余票），
+    #: 只是"这个落点当前被某个停放位占着"，避免求解器把同一个落点
+    #: 分给第二位轮椅旅客。
+    blocked_slots: set[str] = field(default_factory=set)
     orders: list[dict[str, Any]] = field(default_factory=list)
     _color_seq: int = 0
+
+    @property
+    def engine_occupied(self) -> set[str]:
+        """交给求解器的"不可用座位"集合 = 真实售出 + 停放位落点。"""
+        return set(self.occupied) | set(self.blocked_slots)
 
     # -- 余票 ----------------------------------------------------------
     def is_occupied(self, seat_id: str) -> bool:
@@ -96,45 +107,98 @@ class DevStore:
                 result[seat.carriage] = result.get(seat.carriage, 0) + 1
         return result
 
-    # -- 轮椅停放位（独立资源，不占座位票额）------------------------------
+    # -- 轮椅停放位（独立资源、独立编号、不占座位票额）------------------
     def bay_slot_ids(self) -> frozenset[str]:
-        """停放位的账目座位槽。"""
+        """停放位的**内部落点座位**集合（仅供与求解器对接）。
+
+        注意：这不是票务概念，也不作为座位号展示。对外编号一律用
+        :meth:`bay_ids` 里的 ``04车W1`` 形式。
+        """
         return frozenset(
             bay.slot_seat_id for bay in self.formation.wheelchair_bays
             if bay.slot_seat_id
         )
 
+    def bay_ids(self) -> frozenset[str]:
+        """停放位的**对外编号**集合（``04车W1`` 等）。"""
+        return frozenset(bay.bay_id for bay in self.formation.wheelchair_bays)
+
+    def occupied_bay_ids(self) -> set[str]:
+        return set(self.occupied_bays)
+
     def free_bays(self) -> list[dict[str, Any]]:
         """还空着的轮椅停放位。"""
-        occupied = set(self.occupied)
         return [
             bay.to_dict()
             for bay in self.formation.wheelchair_bays
-            if bay.slot_seat_id and bay.slot_seat_id not in occupied
+            if bay.bay_id not in self.occupied_bays
         ]
 
-    def occupied_bays(self) -> list[dict[str, Any]]:
-        occupied = set(self.occupied)
+    def occupied_bay_records(self) -> list[dict[str, Any]]:
         return [
-            bay.to_dict()
+            {**bay.to_dict(), **self.occupied_bays[bay.bay_id]}
             for bay in self.formation.wheelchair_bays
-            if bay.slot_seat_id and bay.slot_seat_id in occupied
+            if bay.bay_id in self.occupied_bays
         ]
+
+    def occupy_bays(
+        self,
+        bay_ids: Iterable[str],
+        order_id: str = "",
+        passenger_name: str = "",
+        color_index: int = 0,
+    ) -> list[str]:
+        """占用停放位（按**独立编号**记账，与座位占用互不影响）。
+
+        停放位不占座位票额 —— 所以这里**不会**往 ``self.occupied``
+        里加任何座位（那会减少余票）。只把该停放位的**内部落点**记进
+        ``blocked_slots``，防止求解器把同一个落点重复分配。
+        """
+        taken: list[str] = []
+        by_id = {bay.bay_id: bay for bay in self.formation.wheelchair_bays}
+        for bay_id in bay_ids:
+            if bay_id in self.occupied_bays:
+                continue
+            self.occupied_bays[bay_id] = {
+                "order_id": order_id,
+                "passenger_name": passenger_name,
+                "color_index": color_index,
+            }
+            bay = by_id.get(bay_id)
+            if bay is not None and bay.slot_seat_id:
+                self.blocked_slots.add(bay.slot_seat_id)
+            taken.append(bay_id)
+        return taken
+
+    def release_bays(self, bay_ids: Iterable[str]) -> int:
+        removed = 0
+        by_id = {bay.bay_id: bay for bay in self.formation.wheelchair_bays}
+        for bay_id in bay_ids:
+            if self.occupied_bays.pop(bay_id, None) is not None:
+                bay = by_id.get(bay_id)
+                if bay is not None and bay.slot_seat_id:
+                    self.blocked_slots.discard(bay.slot_seat_id)
+                removed += 1
+        return removed
 
     def wheelchair_bays_summary(self) -> dict[str, Any]:
         """停放位总览（用户模式要据此提示"还剩几个轮椅位"）。"""
         total = len(self.formation.wheelchair_bays)
-        free = len(self.free_bays())
+        occupied = len(self.occupied_bays)
         return {
             "total": total,
-            "free": free,
-            "occupied": total - free,
+            "free": total - occupied,
+            "occupied": occupied,
             "bays": [
-                {**bay.to_dict(),
-                 "occupied": bay.slot_seat_id in self.occupied}
+                {
+                    **bay.to_dict(),
+                    "occupied": bay.bay_id in self.occupied_bays,
+                    **self.occupied_bays.get(bay.bay_id, {}),
+                }
                 for bay in self.formation.wheelchair_bays
             ],
-            "note": "轮椅固定停放位，独立于座位票额；满位后可经确认改出普通坐票",
+            "note": "轮椅固定停放位，独立编号（如 04车W1），不占座位票额；"
+                    "满位后可经确认改出普通坐票",
         }
 
     # -- 占用 ----------------------------------------------------------
@@ -280,7 +344,10 @@ class DevStore:
                 "class_code": seat.class_code,
                 "quiet": seat.is_quiet_carriage,
                 "accessible": seat.carriage in accessible_carriages,
-                "wheelchair_bay": seat.seat_id in bay_slots,
+                # 该座位紧邻某个轮椅停放位（**它仍是普通座位，可正常发售**）。
+                # 停放位本身是独立资源、独立编号，不在座位表里 ——
+                # 所以这里不叫 wheelchair_bay，避免又被理解成"这个座位就是停放位"。
+                "bay_slot": seat.seat_id in bay_slots,
                 "aisle": seat.is_aisle,
                 "occupied": record is not None,
                 "source": record.source if record else "",
@@ -339,6 +406,8 @@ class DevStore:
 
     def reset(self) -> None:
         self.occupied.clear()
+        self.occupied_bays.clear()
+        self.blocked_slots.clear()
         self.orders.clear()
         self._color_seq = 0
 

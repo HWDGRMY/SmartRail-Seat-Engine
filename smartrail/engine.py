@@ -56,6 +56,34 @@ class BookResult:
         return payload
 
 
+def _assert_rebuild_keeps_fields(source: Order, rebuilt: Order) -> None:
+    """结构不变量：重建 ``Order`` 时不得丢掉任何字段。
+
+    ``_prepare_order`` 为了合并政务数据与信用分而重建 Order。
+    这个"重建丢字段"的坑已经踩了三次：
+
+    * ``default_bond`` 丢了 -> "同订单同座"策略被抹掉，同一单的人变散客；
+    * ``class_code`` 丢了 -> "下单商务座"被分到二等座；
+    * 每次都是**新增字段时忘了在重建处补上**，而调用方完全看不出来。
+
+    靠"记得透传"防不住，所以让机器每次检查。``passengers`` 允许不同
+    （那是有意重算的），其余字段必须原样保留。
+    """
+    import dataclasses as _dc
+
+    for field_info in _dc.fields(source):
+        name = field_info.name
+        if name == "passengers":
+            continue
+        before = getattr(source, name, None)
+        after = getattr(rebuilt, name, None)
+        if before != after:
+            raise AssertionError(
+                f"重建 Order 时字段 '{name}' 被改变：{before!r} -> {after!r}。"
+                "请在 _prepare_order 里透传该字段（不要静默重置为默认值）。"
+            )
+
+
 class SeatEngine:
     """智能铁路座位协同分配引擎。"""
 
@@ -230,6 +258,13 @@ class SeatEngine:
            现在取两者中较低的：账本里的处罚有效，申报的处罚同样有效。
         2. **``default_bond`` 必须透传**。它承载"同订单默认同座"这条策略；
            早期重建 Order 时漏了它，策略在引擎层被抹掉，同一订单的人又变回散客。
+        3. **``class_code`` 必须透传**。它承载"已购席别"这条**硬约束**；
+           早期重建 Order 时同样漏了它，于是"下单商务座"也能分到二等座 ——
+           旅客付了商务座的价钱坐二等座，票务系统里不可接受。
+
+        **教训**：``Order`` 是 dataclass，重建时**每新增一个字段都要在这里透传**，
+        否则新字段会被静默重置为默认值，而调用方完全看不出来。
+        这已经是同一个坑的第三次（``default_bond`` → ``class_code``）。
         """
         passengers: list[Passenger] = []
         for passenger in order.passengers:
@@ -243,14 +278,20 @@ class SeatEngine:
             passengers.append(
                 replace(passenger, support_needs=needs, quietness_score=score)
             )
-        return Order(
+        rebuilt = Order(
             order_id=order.order_id,
             passengers=tuple(passengers),
             relation=order.relation,
             units=order.units,
             bonds=order.bonds,
             default_bond=order.default_bond,
+            class_code=order.class_code,
         )
+        # 结构不变量：重建**不得**丢掉任何字段（除有意重算的乘客属性）。
+        # 这个坑已经踩了三次（default_bond、class_code），
+        # 靠"记得透传"是防不住的，所以让机器每次检查。
+        _assert_rebuild_keeps_fields(order, rebuilt)
+        return rebuilt
 
     def _attach_notices(self, order: Order, solution: Solution) -> None:
         """为一个已完成的解补齐相邻结论与待办提示（幂等）。

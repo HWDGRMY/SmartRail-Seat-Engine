@@ -54,6 +54,7 @@ FATAL:mojo\public\cpp\platform\platform_channel.cc: Check failed: . : 拒绝访�
 | `draw_order_submission.py` | 画"批量提交订单"的结果（含需确认例外与现场处理） | `docs/screenshots/order-submission.png` |
 | `draw_composer.py` | 画 OrderEditor（人员构成组单）的校验与出票结果 | `docs/screenshots/order-editor.png` |
 | `draw_composer_ui.py` | 画 OrderEditor 的**组件布局**（分组控件本身） | `docs/screenshots/order-editor-ui.png` |
+| `draw_wheelchair.py` | 画轮椅固定停放位的**独立编号**与"询问后出票"流程 | `docs/screenshots/wheelchair-bays.png` |
 | `draw_ticket_first.py` | 画出票优先策略的 6 个场景对比 | `docs/screenshots/ticket-first.png` |
 | `verify_order_page.py` | 批量提交页的页面级验收（自带服务） | 控制台结论 |
 | `verify_composer.py` | OrderEditor 的页面级验收（自带服务） | 控制台结论 |
@@ -82,6 +83,7 @@ python tools/draw_order_submission.py                 # 内置示例（含 1 张
 python tools/draw_order_submission.py --orders my.json
 python tools/draw_composer.py                         # 人员构成组单（8 张示例）
 python tools/draw_composer_ui.py                      # 组单界面的组件布局
+python tools/draw_wheelchair.py                       # 轮椅停放位独立编号
 python tools/draw_ticket_first.py
 ```
 

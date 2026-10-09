@@ -406,6 +406,80 @@ def test_same_order_passengers_sit_together() -> None:
           "需照护者与成人之间是硬绑定")
 
 
+def test_class_code_is_a_hard_constraint() -> None:
+    """已购席别是**硬约束**：不能坐到自己没买的席别上。
+
+    真实事故：``book_ticket_order(class_code="商务座")`` 被分到二等座
+    ``03车01A`` —— 旅客付了商务座的价钱坐二等座。
+    根因是两层都漏了：``Order`` 没有 ``class_code`` 字段，
+    而 ``_prepare_order`` 重建 Order 时也不透传它。
+
+    这里同时守住"席别过滤发生在候选池层"这一点 —— 若只是靠代价函数
+    倾向于选对席别，压力大时仍会漏。
+    """
+    print("[购票] 席别硬约束")
+    pax = reset_passenger_store()
+    for want in ("二等座", "一等座", "商务座"):
+        store = reset_dev_store()
+        result = book_ticket_order(store, pax.by_ids(["C001"]),
+                                   class_code=want, order_id=f"C-{want}")
+        seat_id = result["order"]["passengers"][0]["seat_id"]
+        seat = next((s for s in store.formation.seats if s.seat_id == seat_id), None)
+        check(seat is not None, f"下单 {want}：分到真实座位 {seat_id}")
+        check(seat is not None and seat.class_code == want,
+              f"下单 {want} -> 分到 {seat.class_code if seat else '?'}"
+              f"（{seat_id}）")
+    # 多人单同样成立
+    store = reset_dev_store()
+    result = book_ticket_order(store, pax.by_ids(["C001", "C002", "C003", "C004"]),
+                               class_code="一等座", order_id="C-MULTI")
+    got = set()
+    for item in result["order"]["passengers"]:
+        seat = next((s for s in store.formation.seats
+                     if s.seat_id == item["seat_id"]), None)
+        got.add(seat.class_code if seat else "?")
+    check(got == {"一等座"}, f"多人单席别一致（{got}）")
+
+
+def test_engine_rebuild_keeps_order_fields() -> None:
+    """``_prepare_order`` 重建订单时不得丢字段（结构不变量）。
+
+    这个坑踩了三次（``default_bond``、``class_code``），所以加了机器检查：
+    重建后的 ``Order`` 除了 ``passengers``（有意重算）之外，
+    其余字段必须与原订单一致。
+    """
+    print("[购票] 重建订单不丢字段")
+    from smartrail.engine import SeatEngine
+    from smartrail.models import BondType, Order, Passenger, RelationType
+
+    engine = SeatEngine()
+    original = Order(
+        order_id="REBUILD",
+        passengers=(Passenger("A1", age=35),),
+        relation=RelationType.GROUP,
+        bonds={},
+        default_bond=BondType.STRONG,
+        class_code="一等座",
+    )
+    rebuilt = engine._prepare_order(original)
+    check(rebuilt.class_code == "一等座",
+          f"class_code 透传（{rebuilt.class_code!r}）")
+    check(rebuilt.default_bond is BondType.STRONG, "default_bond 透传")
+    check(rebuilt.relation is RelationType.GROUP, "relation 透传")
+    check(rebuilt.order_id == "REBUILD", "order_id 透传")
+    # 反证：若漏传，守卫必须报错（而不是静默重置）
+    import dataclasses as _dc
+
+    broken = _dc.replace(rebuilt, class_code="")
+    try:
+        from smartrail.engine import _assert_rebuild_keeps_fields
+
+        _assert_rebuild_keeps_fields(rebuilt, broken)
+        check(False, "漏传字段时应触发守卫")
+    except AssertionError as error:
+        check("class_code" in str(error), f"守卫拦下漏传（{str(error)[:50]}…）")
+
+
 def main() -> int:
     tests = [
         test_default_profiles_cover_every_type,
@@ -424,6 +498,8 @@ def main() -> int:
         test_fill_ratio_and_manual_locks_are_separate,
         test_occupancy_rejects_bare_string,
         test_same_order_passengers_sit_together,
+        test_class_code_is_a_hard_constraint,
+        test_engine_rebuild_keeps_order_fields,
     ]
     if UNDER_PYTEST:
         for test in tests:

@@ -323,6 +323,9 @@ def book_ticket_order(
 
     order = build_order_from_profiles(profiles, order_id=order_id,
                                       preference=preference)
+    # **席别硬约束**：把已购席别写进订单，求解器据此过滤候选座位。
+    # 不这么做的话"下单商务座"也会被分到二等座（实测发生过）。
+    order = replace(order, class_code=class_code)
     engine = engine or _engine_from_store(store)
     # AllocationMode 只有 free / smart / degraded 三种。
     # 购票流程要的是**智能分配**（带代价函数与硬约束），而不是"自由选座"
@@ -342,25 +345,10 @@ def book_ticket_order(
                    for sid in assignments.values() if sid in seat_index})
     actually_split = len(rows) > 1
 
-    # 写入台账：售出座位 + 订单记录
+    # ---- 第一步：先给轮椅旅客分配**停放位独立编号** ----
+    # 他们从 assignments 里被摘出来，因此**不会占用任何座位** ——
+    # 这就是"无障碍完全独立编号 / 不占座位票额"的落地点。
     color = store.next_color()
-    name_by_seat: dict[str, str] = {}
-    for passenger in order.passengers:
-        seat_id = assignments.get(passenger.passenger_id)
-        if seat_id:
-            name_by_seat[seat_id] = passenger.name
-    store.occupy(
-        name_by_seat.keys(),
-        source=SOURCE_SOLD,
-        order_id=order_id,
-        color_index=color,
-    )
-    for seat_id, name in name_by_seat.items():
-        record = store.occupied.get(seat_id)
-        if record is not None:
-            record.passenger_name = name
-            record.color_index = color
-
     class_seats = {s.seat_id: s for s in store.formation.seats}
     passengers_payload = []
     for passenger in order.passengers:
@@ -377,6 +365,33 @@ def book_ticket_order(
             "class_code": seat.class_code if seat else "",
             "quiet": bool(seat.is_quiet_carriage) if seat else False,
         })
+    assigned_bays = _apply_bay_identity(store, order, passengers_payload,
+                                        color_index=color, order_id=order_id)
+    bay_by_passenger = {
+        payload["passenger_id"]: payload["wheelchair_bay"]
+        for payload in passengers_payload if payload.get("wheelchair_bay")
+    }
+
+    # ---- 第二步：只把"真正坐座位的人"写进座位台账 ----
+    # 拿到停放位的轮椅旅客不在此列（他们不占座位票额）。
+    name_by_seat: dict[str, str] = {}
+    for passenger in order.passengers:
+        if passenger.passenger_id in bay_by_passenger:
+            continue
+        seat_id = assignments.get(passenger.passenger_id)
+        if seat_id:
+            name_by_seat[seat_id] = passenger.name
+    store.occupy(
+        name_by_seat.keys(),
+        source=SOURCE_SOLD,
+        order_id=order_id,
+        color_index=color,
+    )
+    for seat_id, name in name_by_seat.items():
+        record = store.occupied.get(seat_id)
+        if record is not None:
+            record.passenger_name = name
+            record.color_index = color
     order_record = {
         "order_id": order_id,
         "class_code": class_code,
@@ -404,15 +419,72 @@ def book_ticket_order(
     }
 
 
+def _apply_bay_identity(
+    store: DevStore,
+    order: Any,
+    passengers_payload: list[dict[str, Any]],
+    color_index: int = 0,
+    order_id: str = "",
+) -> list[str]:
+    """把轮椅旅客的座位号换成**停放位独立编号**并占用停放位。
+
+    需求："无障碍要求完全独立编号"。所以：
+
+    * 凭证上写 ``04车W1``，**不写座位号**；
+    * 停放位按编号独立记账（``store.occupy_bays``），
+      **不占用任何座位票额**；
+    * 求解器内部给的落点座位保留在 ``internal_seat_id`` 里，
+      仅供工程侧排查，不进入票面。
+
+    返回实际分配的停放位编号列表。
+    """
+    from ..models import SupportNeed
+
+    occupied_now = store.occupied_bay_ids()
+    free = [
+        bay for bay in store.formation.wheelchair_bays
+        if bay.bay_id not in occupied_now
+    ]
+    assigned: list[str] = []
+    for passenger, payload in zip(order.passengers, passengers_payload):
+        if SupportNeed.WHEELCHAIR not in passenger.support_needs:
+            continue
+        if not free:
+            # 停放位已满：按"询问后出普通坐票"的结论，保留座位号
+            payload["wheelchair_bay"] = ""
+            payload["bay_assigned"] = False
+            continue
+        bay = free.pop(0)
+        payload["internal_seat_id"] = payload["seat_id"]
+        payload["seat_id"] = bay.bay_id          # 票面写停放位编号
+        payload["wheelchair_bay"] = bay.bay_id
+        payload["bay_assigned"] = True
+        payload["carriage"] = bay.carriage
+        payload["row"] = bay.row
+        payload["col"] = ""
+        assigned.append(bay.bay_id)
+    store.occupy_bays(assigned, order_id=order_id, color_index=color_index)
+    # 回填姓名，便于开发者座位图展示
+    for bay_id in assigned:
+        record = store.occupied_bays.get(bay_id)
+        if record is None:
+            continue
+        for passenger, payload in zip(order.passengers, passengers_payload):
+            if payload.get("wheelchair_bay") == bay_id:
+                record["passenger_name"] = passenger.name
+    return assigned
+
+
 def _engine_from_store(store: DevStore):
     """用台账的占用状态建一个引擎，保证余票口径一致。"""
     from ..engine import SeatEngine
 
     engine = SeatEngine(formation=store.formation)
-    if store.occupied:
+    occupied = store.engine_occupied if hasattr(store, 'engine_occupied') else set(store.occupied)
+    if occupied:
         # 注意必须传集合：``mark_occupied`` 的入参是座位 ID 序列，
         # 传单个字符串会被逐字符迭代（clustering 里已加显式拦截）。
-        engine.state.mark_occupied(set(store.occupied))
+        engine.state.mark_occupied(occupied)
     return engine
 
 

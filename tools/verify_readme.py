@@ -136,9 +136,20 @@ for label, base, claimed in (
 print()
 print("=== 5) README 章节完整性 ===")
 sections = re.findall(r"^## (.+)$", readme, re.M)
-note(len(sections) >= 18, f"顶层章节 {len(sections)} 个")
-for want in ("项目简介", "核心成绩", "项目目录结构", "快速开始", "踩坑记录", "许可证"):
+note(len(sections) >= 15, f"顶层章节 {len(sections)} 个")
+# 「踩坑记录」已按需求迁到独立开发日志：README 面向"是什么 / 怎么用"，
+# 调试过程的原始记录放 docs/DEVELOPMENT_LOG.md。这里改为检查两者都在，
+# 且 README 只留链接、不展开正文。
+for want in ("项目简介", "核心成绩", "项目目录结构", "快速开始", "许可证"):
     note(any(want in s for s in sections), f"含章节「{want}」")
+log_path = ROOT / "docs" / "DEVELOPMENT_LOG.md"
+note(log_path.exists(), "开发日志 docs/DEVELOPMENT_LOG.md 存在")
+if log_path.exists():
+    log_text = log_path.read_text(encoding="utf-8")
+    entries = re.findall(r"^## 坑点 \d+", log_text, re.M)
+    note(len(entries) >= 20, f"开发日志收录 {len(entries)} 条踩坑记录")
+    note("DEVELOPMENT_LOG.md" in readme, "README 里有指向开发日志的链接")
+    note("### 坑点" not in readme, "README 不再展开踩坑正文")
 
 print()
 print("=== 6) 反面结论是否如实保留 ===")

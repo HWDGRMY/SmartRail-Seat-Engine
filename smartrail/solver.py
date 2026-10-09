@@ -159,7 +159,15 @@ class SolverTables:
     def __init__(self, ctx: OrderContext, state: BookingState, config: EngineConfig) -> None:
         self.ctx = ctx
         self.cfg = config
-        self.seats: list[Seat] = list(state.available_seats)
+        seats = list(state.available_seats)
+        # **席别硬约束**：旅客不能坐到自己没买的席别上。
+        # 在候选池这一层过滤（而不是罚分），因为罚分只影响"选哪个"，
+        # 候选池才决定"能不能选"。
+        wanted_class = getattr(ctx.order, "class_code", "") or ""
+        if wanted_class:
+            seats = [seat for seat in seats if seat.class_code == wanted_class]
+        self.seats: list[Seat] = seats
+        self.wanted_class: str = wanted_class
         #: 轮椅停放位的账目座位槽（全列 4 个）。空集合表示"该编组没有停放位信息"，
         #: 此时轮椅判定退回旧的"无障碍专区"口径（见 is_wheelchair_seat）。
         self.bay_slot_ids: frozenset[str] = wheelchair_bay_slot_ids(

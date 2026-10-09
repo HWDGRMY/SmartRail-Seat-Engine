@@ -218,45 +218,55 @@ for path, name in (("/booking", "批量提交 + OrderEditor"),
     check(status == 200, f"{path} 仍可访问（{name}）")
 
 print()
-print("=== 目标 13：轮椅固定停放位（独立资源，不占座位票额）===")
+print("=== 目标 13：轮椅固定停放位（独立编号，不占座位票额）===")
 status, snap = call("/api/dev/snapshot")
 bays = snap["wheelchair_bays"]
 check(bays["total"] == 4, f"全列 4 个停放位（{bays['total']}）")
 check(bays["free"] == 4, f"重置后 4 个全空（{bays['free']}）")
+bay_ids = sorted(b["bay_id"] for b in bays["bays"])
+check(bay_ids == ["04车W1", "04车W2", "12车W1", "12车W2"],
+      f"完全独立编号 {bay_ids}")
 cars = {c["number"]: c for c in snap["carriages"]}
 check(cars[4]["wheelchair_bays"] == 2 and cars[12]["wheelchair_bays"] == 2,
       f"04/12 车各 2 个（{cars[4]['wheelchair_bays']}/{cars[12]['wheelchair_bays']}）")
 check(cars[4]["total"] == 78 and cars[12]["total"] == 78,
       f"停放位不占座位票额：04/12 车仍是 78 座"
       f"（{cars[4]['total']}/{cars[12]['total']}）")
-marked = {s["seat_id"] for s in snap["seats"] if s.get("wheelchair_bay")}
-check(len(marked) == 4, f"座位图标出 4 个停放位（{sorted(marked)}）")
+# 座位表里不应再有"这个座位就是停放位"的标记
+check(not any(s.get("wheelchair_bay") for s in snap["seats"]),
+      "座位表不把座位标成停放位")
 check(sum(snap["remaining"].values()) == 1238,
       f"全列余票仍按 1238 座计（{sum(snap['remaining'].values())}）")
 
-# 轮椅旅客优先分配停放位；4 个满位后询问并出普通坐票
+# 轮椅旅客优先分配停放位，且票面写的是**停放位编号**，不占座位
 call("/api/dev/reset", {"passengers": True})
 status, pax_all = call("/api/passengers")
 wheel_id = next(p["profile_id"] for p in pax_all["passengers"]
                 if p["type_id"] == "wheelchair")
-bay_slots = sorted(marked)
+seats_before = call("/api/dev/snapshot")[1]["remaining"]["二等座"]
 for index in range(1, 5):
     status, body = call("/api/tickets/book",
                         {"class_code": "二等座", "profile_ids": [wheel_id],
                          "order_id": f"BAY{index}"})
-    seat_id = body["order"]["passengers"][0]["seat_id"]
-    check(seat_id in bay_slots,
-          f"第 {index} 张轮椅单落在停放位（{seat_id}）")
+    payload = body["order"]["passengers"][0]
+    check(payload["seat_id"] == bay_ids[index - 1],
+          f"第 {index} 张票面是停放位编号（{payload['seat_id']}）")
+    check(payload["seat_id"] not in {s["seat_id"] for s in snap["seats"]},
+          "票面编号不是座位号")
+seats_after = call("/api/dev/snapshot")[1]["remaining"]["二等座"]
+check(seats_after == seats_before,
+      f"4 位轮椅旅客**不吃座位票额**（{seats_before} -> {seats_after}）")
+
 status, verdict = call("/api/trains/evaluate",
                        {"class_code": "二等座", "profile_ids": [wheel_id]})
 wc = verdict["wheelchair"]
 check(wc["needs_confirmation"], "4 个满位后给出询问")
-check("普通坐票" in wc["question"], f"询问里说明改出普通坐票")
+check("普通坐票" in wc["question"], "询问里说明改出普通坐票")
 status, body = call("/api/tickets/book",
                     {"class_code": "二等座", "profile_ids": [wheel_id],
                      "order_id": "BAY5"})
 check(status == 200 and body["ok"], "询问后仍照常出票（不静默拒票）")
-check(body["order"]["passengers"][0]["seat_id"] not in bay_slots,
+check(body["order"]["passengers"][0]["seat_id"] not in bay_ids,
       "第 5 张发的是普通座位")
 call("/api/dev/reset", {"passengers": True})
 

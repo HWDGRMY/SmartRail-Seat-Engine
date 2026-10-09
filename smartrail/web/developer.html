@@ -70,8 +70,8 @@
   .seat.preset{background:#c9d4e0;border-color:#b7c4d3;color:#5a6a7c}
   .seat.quiet{outline:2px solid var(--quiet);outline-offset:-2px}
   .seat.access{box-shadow:inset 0 -3px 0 var(--access)}
-  .seat.bayfree{background:#e6f7f7;border-color:var(--access);color:#0f7d7d;
-    font-weight:700}
+  .seat.bayslot{background:#e6f7f7;border-color:var(--access);color:#0f7d7d;
+    box-shadow:inset 3px 0 0 var(--access)}
   .seat.aisle-gap{background:transparent;border:0;width:14px}
   .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;align-items:center}
   .legend i{display:inline-block;width:13px;height:13px;border-radius:3px;
@@ -124,9 +124,10 @@
             <span><i style="background:#d9c7a8"></i>手动锁定</span>
             <span><i style="background:#c9d4e0"></i>预设占用</span>
             <span><i style="border:2px solid var(--quiet)"></i>静音车厢</span>
-            <span><i style="background:#e6f7f7;border-color:var(--access)"></i>轮椅停放位</span>
+            <span><i style="background:#e6f7f7;border-color:var(--access)"></i>近轮椅位</span>
           </div>
-          <div class="hint" id="baySummary" style="margin-bottom:10px"></div>
+          <div class="hint" id="baySummary" style="margin-bottom:6px"></div>
+          <div id="bayList" style="margin-bottom:10px"></div>
           <div id="carriages"><div class="hint">加载中…</div></div>
         </div>
       </div>
@@ -206,7 +207,7 @@ let snapshot = null;
 let pendingTimers = {};
 
 function seatClass(seat) {
-  if (!seat.occupied) return seat.wheelchair_bay ? "bayfree" : "";
+  if (!seat.occupied) return seat.bay_slot ? "bayslot" : "";
   if (seat.source === "sold") return "sold";
   if (seat.source === "manual") return "manual";
   return "preset";
@@ -255,7 +256,7 @@ function renderCarriages() {
         if (seat.accessible) cls.push("access");
         const title = [
           seat.seat_id, seat.class_code,
-          seat.wheelchair_bay ? "★ 轮椅固定停放位" : "",
+          seat.bay_slot ? "★ 紧邻轮椅固定停放位（该座位仍为普通座位，可正常发售）" : "",
           seat.occupied ? `已占用（${seat.source}${seat.order_id ? " " + seat.order_id : ""}${
             seat.passenger_name ? " " + seat.passenger_name : ""}）` : "可选",
           seat.quiet ? "静音车厢" : "",
@@ -389,9 +390,24 @@ async function refresh() {
   const bays = snapshot.wheelchair_bays || {};
   if ($("baySummary")) {
     $("baySummary").textContent =
-      `轮椅固定停放位 ${bays.total} 个（04 车、12 车各 2 个），`
+      `轮椅固定停放位 ${bays.total} 个（04 车、12 车各 2 个）· `
       + `空 ${bays.free} 个 · 已占 ${bays.occupied} 个。`
-      + `停放位独立于座位票额，不占用普通座位；满位后可经确认改出普通坐票。`;
+      + `停放位**独立编号**（如 04车W1）且**不占座位票额**；满位后可经确认改出普通坐票。`;
+  }
+  if ($("bayList")) {
+    $("bayList").innerHTML = (bays.bays || []).map((bay) => `
+      <div class="paxline" data-testid="bay-${esc(bay.bay_id)}">
+        <span style="width:74px;font-weight:700;
+          color:${bay.occupied ? "var(--bad)" : "var(--access)"}">
+          ${esc(bay.bay_id)}</span>
+        <span class="tag" style="background:#e6f7f7;border-color:#a9dede;color:#0f7d7d">
+          ${bay.carriage} 车</span>
+        <span class="nm">${bay.occupied
+          ? esc(bay.passenger_name || "已占用")
+          : "空闲"}</span>
+        <span class="hint">${bay.occupied
+          ? esc(bay.order_id || "") : "可分配给轮椅旅客"}</span>
+      </div>`).join("");
   }
 }
 
