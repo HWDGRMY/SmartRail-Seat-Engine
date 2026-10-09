@@ -1,4 +1,4 @@
-﻿# SmartRail-Seat-Engine：高铁选座决策引擎（V1.0 启发式 → V2.0 运筹学 → V3.0 强化学习）
+# SmartRail-Seat-Engine：高铁选座决策引擎（V1.0 启发式 → V2.0 运筹学 → V3.0 强化学习）
 
 ## 项目简介
 
@@ -361,6 +361,7 @@ SmartRail-Seat-Engine/
 │   ├── verify_order_page.py       # 批量提交页页面级验收（自带服务）
 │   ├── verify_composer.py         # ★ OrderEditor 页面级验收（自带服务）
 │   ├── verify_ticketing.py        # ★ 12306 购票流程 HTTP 验收（自带服务）
+│   ├── verify_goal_12306.py       # ★ 12306 重构需求 12 项逐条验收
 │   ├── check_page_js.py           # ★ Node 实跑页面 JS：启动 + 按钮绑定 + 逐个点击
 │   ├── verify_served_pages.py     # ★ 检查服务实际下发的六个页面
 │   ├── verify_readme.py           # 校验 README 的数字与路径声明

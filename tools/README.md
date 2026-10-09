@@ -60,6 +60,7 @@ FATAL:mojo\public\cpp\platform\platform_channel.cc: Check failed: . : 拒绝访�
 | `check_page_js.py` | **在 Node 里真跑页面 JS**：启动、按钮绑定、逐个点击 | 控制台结论 |
 | `verify_served_pages.py` | 检查**服务实际下发**的六个页面（防"本地好了、线上还是旧版"） | 控制台结论 |
 | `verify_ticketing.py` | 12306 购票流程的 HTTP 端到端验收（自带服务） | 控制台结论 |
+| `verify_goal_12306.py` | **逐条验收 12306 重构需求**的 12 项（需后端在跑） | 控制台结论 |
 | `verify_readme.py` | **校验 README 里的可核查声明**（路径、断言数、文件数） | 控制台结论 |
 | `verify_goal.py` | 目标总验收（读 GitHub API 独立核验） | 控制台结论 |
 | `count_files.py` | 统计各目录的文件数/行数（写文档时取数用） | 控制台结论 |
@@ -99,6 +100,16 @@ python tools/check_page_js.py         # 在 Node 里真跑每个页面的 JS 并
 python tools/check_page_js.py booking # 只检查某一页
 python tools/verify_served_pages.py   # 检查服务实际下发的六个页面
 ```
+
+**需求逐条验收**（需后端在跑）：
+
+```bash
+python tools/verify_goal_12306.py     # 12306 重构需求的 12 项逐条核对
+```
+
+这个脚本的存在理由：README 与实际代码容易各说各话，而**需求条目**
+更容易被漏掉。它把需求原文拆成 12 条可机器验证的断言，
+全部针对运行中的服务，而不是读代码猜测意图。
 
 这两个脚本的由来见下面"为什么必须真跑一遍 JS"。
 
