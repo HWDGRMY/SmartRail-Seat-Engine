@@ -55,9 +55,20 @@ note(len(sections) >= 18, f"顶层章节 {len(sections)} 个")
 # 属于典型的"凭感觉设阈值"。
 note(len(readme.splitlines()) >= 700, f"README 行数 {len(readme.splitlines())}")
 note(len(readme) > 20000, f"README 字符数 {len(readme)}")
-for want in ("项目简介", "核心成绩", "项目目录结构", "快速开始", "踩坑记录",
+for want in ("项目简介", "核心成绩", "项目目录结构", "快速开始",
              "验收台", "环境限制说明", "许可证"):
     note(any(want in s for s in sections), f"含章节「{want}」")
+# 「踩坑记录」已按需求迁到独立开发日志：README 保持简洁（是什么 / 怎么用），
+# 调试过程原始记录放 docs/DEVELOPMENT_LOG.md。这里检查两者都在，
+# 并确认 README 只留链接、不展开正文。
+log_file = ROOT / "docs" / "DEVELOPMENT_LOG.md"
+note(log_file.exists(), "开发日志 docs/DEVELOPMENT_LOG.md 存在")
+if log_file.exists():
+    log_text = log_file.read_text(encoding="utf-8")
+    entries = re.findall(r"^## 坑点 \d+", log_text, re.M)
+    note(len(entries) >= 20, f"开发日志收录 {len(entries)} 条踩坑记录")
+    note("DEVELOPMENT_LOG.md" in readme, "README 有指向开发日志的链接")
+    note("### 坑点" not in readme, "README 不展开踩坑正文")
 result = subprocess.run(
     [str(ROOT / ".venv/Scripts/python.exe"), "-B", "-u", "tests/pytest_shim.py", "-q"],
     cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="ignore")
