@@ -443,23 +443,33 @@ def _empty_solution(order_id: str) -> Solution:
     )
 
 
-def submit_orders(payload: Mapping[str, Any]) -> dict[str, Any]:
+def submit_orders(
+    payload: Mapping[str, Any],
+    engine: "SeatEngine | None" = None,
+) -> dict[str, Any]:
     """逐单求解"用户手工构造的订单"，并明确告出哪张单不能满足、为什么。
 
     与 :func:`concurrent_simulation` 的区别：那个是"按人群类型批量生成订单"，
     这个是"用户自己组单，自己决定每单几个人、都是什么人"。
+
+    ``engine``：**传入时用它，不再新建**。这一步是必需的 ——
+    早先这里无条件 ``reset_engine()`` 建**空车**，于是这条路径完全看不到
+    开发者页设定的余票与已售座位，实测「二等座余票 2，下 4 人单」
+    依然"全部出票"发了 4 张票（超卖 2 张），而且出票后余票纹丝不动
+    （1152 -> 1152）。用户模式在同样状态下会正确分票并扣减余票。
     """
     from ..feasibility import analyse_order, feasibility_catalog, outcome_summary
 
     orders = orders_from_design(payload)
     formation = str(payload.get("formation", "crh16"))
-    ledger = CreditLedger()
-    engine = reset_engine(
-        create_engine(formation, ledger),
-        formation=formation,
-        fill=float(payload.get("fill", 0.0)),
-        seed=int(payload.get("seed", 7)),
-    )
+    if engine is None:
+        ledger = CreditLedger()
+        engine = reset_engine(
+            create_engine(formation, ledger),
+            formation=formation,
+            fill=float(payload.get("fill", 0.0)),
+            seed=int(payload.get("seed", 7)),
+        )
     seat_lookup = engine.formation.by_id()
     started = time.perf_counter()
 
@@ -671,6 +681,9 @@ def submit_compositions(payload: Mapping[str, Any]) -> dict[str, Any]:
     ]
     solved: dict[str, Any] = {}
     seat_map: dict[str, Any] = {}
+    # 用**开发者台账的真实库存**建引擎：余票滑块与已售座位都在台账里，
+    # 必须让求解器看到同一份事实 —— 否则会出现"余票 2 却发出 4 张票"。
+    live_engine = ledger_engine()
     if runnable:
         submitted = submit_orders(
             {
@@ -714,12 +727,17 @@ def submit_compositions(payload: Mapping[str, Any]) -> dict[str, Any]:
                 # 漏了这一步，"写在请求顶层"的写法会被静默忽略。
                 "class_code": payload.get("class_code", ""),
                 "same_order_bond": payload.get("same_order_bond"),
-            }
+            },
+            # 用台账引擎：余票与已售座位都取自同一份事实
+            engine=live_engine,
         )
         solved = {
             item["order_id"]: item for item in submitted.get("orders", [])
         }
         seat_map = submitted
+        # 出票后把座位**写回台账** —— 否则开发者页的余票纹丝不动，
+        # 明明出了票却还显示满车余票（实测 1152 -> 1152）。
+        _persist_sold_seats(submitted)
 
     orders_payload: list[dict[str, Any]] = []
     for composition, mapping in zip(compositions, mappings):
@@ -792,6 +810,46 @@ def submit_compositions(payload: Mapping[str, Any]) -> dict[str, Any]:
         "seat_owner": (seat_map or {}).get("seat_owner", {}),
         "schema": composition_schema(policy),
     }
+
+
+def ledger_engine() -> SeatEngine:
+    """按**开发者台账的真实状态**建一个引擎。
+
+    余票滑块与"用户已售"都存在台账里，而求解器只认引擎的 ``state.occupied``。
+    两者必须是同一份事实 —— 早先组单路径新建空车引擎，于是
+    "二等座余票 2"的状态下 4 人单照样全部出票（超卖 2 张），
+    出票后余票还纹丝不动。
+    """
+    from ..ticketing import get_dev_store
+
+    store = get_dev_store()
+    engine = SeatEngine(formation=store.formation)
+    occupied = set(store.engine_occupied)
+    if occupied:
+        engine.state.mark_occupied(occupied)
+    return engine
+
+
+def _persist_sold_seats(submitted: Mapping[str, Any]) -> int:
+    """把求解结果里"已售出"的座位写回开发者台账。返回写入数量。
+
+    必须写回，否则开发者页的余票不会减少 —— 明明出了票却仍显示满车余票，
+    余票滑块与座位图也会与实际出票脱节。
+    """
+    from ..ticketing import get_dev_store
+    from ..ticketing.devstore import SOURCE_SOLD
+
+    store = get_dev_store()
+    written = 0
+    for order in submitted.get("orders", []):
+        order_id = str(order.get("order_id") or "")
+        for seat_id in (order.get("seats") or {}).values():
+            if not seat_id or store.is_occupied(seat_id):
+                continue
+            store.occupy([seat_id], source=SOURCE_SOLD, order_id=order_id,
+                         color_index=int(order.get("color_index") or 0))
+            written += 1
+    return written
 
 
 def _record_composition_orders(

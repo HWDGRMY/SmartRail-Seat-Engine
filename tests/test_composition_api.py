@@ -222,6 +222,72 @@ def test_class_code_reaches_the_solver() -> None:
           f"same_order_bond 覆盖后席别仍生效（{sorted(classes)}）")
 
 
+def test_composition_respects_ledger_inventory() -> None:
+    """构成组单必须看到**台账的真实库存**，不能超卖。
+
+    真实事故（用户报"这里出票怎么不受有没有座位影响？"）：
+    ``submit_orders`` 无条件 ``reset_engine()`` 建**空车**引擎，
+    于是这条路径完全看不到开发者页设定的余票与已售座位。实测：
+
+    ==================  ====================================
+    二等座余票 172      4 人单「全部出票」（应为需现场处理）
+    二等座余票 **2**    4 人单**仍然全部出票，发了 4 张票** ← 超卖 2 张
+    组单后余票          1152 -> 1152（出了票却不扣减）
+    ==================  ====================================
+
+    现在改成用台账引擎，并把出票结果写回台账。
+    """
+    print("[构成接口] 库存约束（不得超卖）")
+    from smartrail.ticketing import reset_dev_store as _reset
+
+    # ① 余票充足：出票成功，且出票后余票减少
+    _reset()
+    before = len(_snapshot_seats())
+    payload = {**comp(adult=2, child=2), "class_code": "二等座"}
+    result = service.submit_compositions({"orders": [payload]})
+    order = result["orders"][0]
+    seats = sorted((order.get("seats") or {}).values())
+    check(len(seats) == 4, f"余票充足时 4 人全部出票（{len(seats)}）")
+    check(len(_snapshot_seats()) == before - 4,
+          f"出票后台账少了 4 个空位（{before} -> {len(_snapshot_seats())}）")
+
+    # ② 余票不足：**不得超卖**
+    _reset()
+    store = get_dev_store()
+    store.set_remaining("二等座", 2)
+    payload = {**comp(adult=2, child=2), "class_code": "二等座"}
+    result = service.submit_compositions({"orders": [payload]})
+    order = result["orders"][0]
+    seats = sorted((order.get("seats") or {}).values())
+    check(len(seats) <= 2,
+          f"余票 2 时最多出 2 座（实际 {len(seats)}：{seats}）")
+    check(store.remaining("二等座")["二等座"] >= 0,
+          f"余票不为负（{store.remaining('二等座')['二等座']}）")
+
+    # ③ 余票为 0：不出票，且给出原因（不是静默失败）
+    _reset()
+    # **必须重新取 store**：_reset() 换的是全局单例，手里的旧引用
+    # 指向已废弃的实例（踩过：写漏这一行，測试拿旧台账、结果假失败）。
+    store = get_dev_store()
+    store.set_remaining("二等座", 0)
+    check(store.remaining("二等座")["二等座"] == 0,
+          f"余票已置 0（{store.remaining('二等座')['二等座']}）")
+    payload = {**comp(adult=1), "class_code": "二等座"}
+    result = service.submit_compositions({"orders": [payload]})
+    order = result["orders"][0]
+    check(not (order.get("seats") or {}),
+          f"余票 0 时不发座（{order.get('seats')}）")
+    check(order.get("level_label"),
+          f"给出分档说明（{order.get('level_label')}）")
+
+
+def _snapshot_seats() -> list[str]:
+    """台账里还空着的二等座（用于核对余票增减）。"""
+    store = get_dev_store()
+    return [seat.seat_id for seat in store.formation.seats
+            if seat.class_code == "二等座" and not store.is_occupied(seat.seat_id)]
+
+
 def main() -> int:
     tests = [
         test_blocked_orders_are_not_submitted,
@@ -229,6 +295,7 @@ def main() -> int:
         test_term_pregnancy_gate,
         test_multi_order_isolation,
         test_class_code_reaches_the_solver,
+        test_composition_respects_ledger_inventory,
         test_schema_returned,
     ]
     if UNDER_PYTEST:

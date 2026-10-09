@@ -352,6 +352,43 @@ check(bool(guarded.get("blocked")),
       "儿童无成人陪同被拦下（未进入求解器）")
 
 print()
+print("=== 目标 12e3：组单必须受库存约束（不得超卖）===")
+# 真实事故：submit_orders 无条件 reset_engine() 建空车引擎，
+# 于是组单路径完全看不到开发者页的余票，实测「余票 2 下 4 人单」
+# 仍然全部出票（超卖 2 张），且出票后余票纹丝不动。
+call("/api/dev/reset", {"passengers": True})
+before_remaining = call("/api/dev/snapshot")[1]["remaining"]["二等座"]
+composed = _composition(adult=2, child=2)
+composed["class_code"] = "二等座"
+style, ok_body = call("/api/composition/submit", {"orders": [composed]})
+ok_seats = sorted((ok_body["orders"][0].get("seats") or {}).values())
+after_remaining = call("/api/dev/snapshot")[1]["remaining"]["二等座"]
+check(len(ok_seats) == 4, f"余票充足时 4 人全部出票（{len(ok_seats)}）")
+check(after_remaining == before_remaining - 4,
+      f"出票后台账余票减少 4（{before_remaining} -> {after_remaining}）")
+
+call("/api/dev/reset", {"passengers": True})
+call("/api/dev/remaining", {"class_code": "二等座", "remaining": 2})
+check(call("/api/dev/snapshot")[1]["remaining"]["二等座"] == 2, "余票已置 2")
+style, tight = call("/api/composition/submit", {"orders": [composed]})
+tight_seats = sorted((tight["orders"][0].get("seats") or {}).values())
+check(len(tight_seats) <= 2,
+      f"余票 2 时最多出 2 座（实际 {len(tight_seats)}：{tight_seats}）")
+check(call("/api/dev/snapshot")[1]["remaining"]["二等座"] >= 0,
+      "余票不为负")
+
+call("/api/dev/reset", {"passengers": True})
+call("/api/dev/remaining", {"class_code": "二等座", "remaining": 0})
+style, empty = call("/api/composition/submit",
+                    {"orders": [{**_composition(adult=1),
+                                 "class_code": "二等座"}]})
+empty_order = empty["orders"][0]
+check(not (empty_order.get("seats") or {}),
+      f"余票 0 时不发座（{empty_order.get('seats')}）")
+check(bool(empty_order.get("level_label")),
+      f"给出原因而非静默失败（{empty_order.get('level_label')}）")
+
+print()
 print("=== 目标 12f：开发者提交的订单必须被保留 ===")
 # 需求："开发者提交的订单难道不用保留吗" —— 原先这条路径完全没记录。
 call("/api/dev/reset", {"passengers": True})
@@ -387,6 +424,9 @@ check(len(again) == 3, f"再取快照记录仍在（{len(again)}）")
 
 print()
 print("=== 目标 13：轮椅固定停放位（独立编号，不占座位票额）===")
+# 先重置：前面的目标会真的出票（现在组单也会扣减余票、占用座位），
+# 而这一段要核对"全列 1238 座"这种**空车基线**。
+call("/api/dev/reset", {"passengers": True})
 status, snap = call("/api/dev/snapshot")
 bays = snap["wheelchair_bays"]
 check(bays["total"] == 4, f"全列 4 个停放位（{bays['total']}）")
