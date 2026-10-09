@@ -96,6 +96,47 @@ class DevStore:
                 result[seat.carriage] = result.get(seat.carriage, 0) + 1
         return result
 
+    # -- 轮椅停放位（独立资源，不占座位票额）------------------------------
+    def bay_slot_ids(self) -> frozenset[str]:
+        """停放位的账目座位槽。"""
+        return frozenset(
+            bay.slot_seat_id for bay in self.formation.wheelchair_bays
+            if bay.slot_seat_id
+        )
+
+    def free_bays(self) -> list[dict[str, Any]]:
+        """还空着的轮椅停放位。"""
+        occupied = set(self.occupied)
+        return [
+            bay.to_dict()
+            for bay in self.formation.wheelchair_bays
+            if bay.slot_seat_id and bay.slot_seat_id not in occupied
+        ]
+
+    def occupied_bays(self) -> list[dict[str, Any]]:
+        occupied = set(self.occupied)
+        return [
+            bay.to_dict()
+            for bay in self.formation.wheelchair_bays
+            if bay.slot_seat_id and bay.slot_seat_id in occupied
+        ]
+
+    def wheelchair_bays_summary(self) -> dict[str, Any]:
+        """停放位总览（用户模式要据此提示"还剩几个轮椅位"）。"""
+        total = len(self.formation.wheelchair_bays)
+        free = len(self.free_bays())
+        return {
+            "total": total,
+            "free": free,
+            "occupied": total - free,
+            "bays": [
+                {**bay.to_dict(),
+                 "occupied": bay.slot_seat_id in self.occupied}
+                for bay in self.formation.wheelchair_bays
+            ],
+            "note": "轮椅固定停放位，独立于座位票额；满位后可经确认改出普通坐票",
+        }
+
     # -- 占用 ----------------------------------------------------------
     def occupy(
         self,
@@ -223,6 +264,11 @@ class DevStore:
 
     def snapshot(self) -> dict[str, Any]:
         """开发者模式的全局座位视图。"""
+        bay_slots = self.bay_slot_ids()
+        accessible_carriages = {
+            carriage.number for carriage in self.formation.carriages
+            if carriage.has_accessible_zone
+        }
         seats: list[dict[str, Any]] = []
         for seat in self.formation.seats:
             record = self.occupied.get(seat.seat_id)
@@ -233,7 +279,8 @@ class DevStore:
                 "col": seat.col,
                 "class_code": seat.class_code,
                 "quiet": seat.is_quiet_carriage,
-                "accessible": seat.accessible_zone,
+                "accessible": seat.carriage in accessible_carriages,
+                "wheelchair_bay": seat.seat_id in bay_slots,
                 "aisle": seat.is_aisle,
                 "occupied": record is not None,
                 "source": record.source if record else "",
@@ -263,6 +310,7 @@ class DevStore:
                 "quiet": carriage.is_quiet_carriage,
                 "accessible": carriage.has_accessible_zone,
                 "toilet": carriage.has_toilet,
+                "wheelchair_bays": carriage.wheelchair_bays,
                 "total": len(rows),
                 "remaining": sum(
                     1 for s in rows if s.seat_id not in self.occupied
@@ -280,6 +328,7 @@ class DevStore:
             "occupied_count": len(self.occupied),
             "remaining": self.remaining(),
             "remaining_by_carriage": self.remaining_by_carriage(),
+            "wheelchair_bays": self.wheelchair_bays_summary(),
             "carriages": carriages,
             "seats": seats,
             "orders": list(self.orders),

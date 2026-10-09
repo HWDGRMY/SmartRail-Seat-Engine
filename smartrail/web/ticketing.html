@@ -529,10 +529,21 @@ async function refreshVerdict() {
       preference: { columns: seatPref, quiet: quietPref },
     });
     const v = data.verdict || {};
+    const wc = data.wheelchair || {};
     const parts = [];
     (data.errors || []).forEach((e) => {
       parts.push(`<div class="notice bad">${esc(e)}</div>`);
     });
+    // 轮椅停放位：够用就说明，不够就**询问**（不是拒票）
+    if (wc.requested > 0) {
+      if (wc.needs_confirmation) {
+        parts.push(`<div class="notice warn" data-testid="wheelchair-ask">
+          <b>需要您确认</b>：${esc(wc.question)}</div>`);
+      } else {
+        parts.push(`<div class="notice ok">本单 ${wc.requested} 位轮椅旅客，
+          可分配轮椅固定停放位（剩余 ${wc.bays_free} 个，独立于座位票额）。</div>`);
+      }
+    }
     if (!data.errors || !data.errors.length) {
       if (v.split_needed) {
         parts.push(`<div class="notice warn"><b>需要自动分票</b>：${esc(v.reason)}。
@@ -559,10 +570,18 @@ async function submitOrder() {
     });
     const order = result.order || {};
     const rows = (order.rows || []).join("、");
+    const wc = result.wheelchair || {};
     const splitNote = order.split
       ? `<div class="notice warn">系统已<b>自动分票</b>：${esc(rows)}</div>`
       : `<div class="notice ok">已按选座偏好安排：${esc(rows)}</div>`;
-    $("verdictBox").innerHTML = splitNote + `<div class="notice info">
+    const bayNote = wc.requested > 0
+      ? (wc.bays_assigned > 0
+          ? `<div class="notice info">${wc.bays_assigned} 位轮椅旅客已分配
+             <b>轮椅固定停放位</b>（独立于座位票额）。</div>`
+          : `<div class="notice warn">轮椅停放位已满，已按您确认改出
+             <b>普通坐票</b>，站车将协助上下车。</div>`)
+      : "";
+    $("verdictBox").innerHTML = splitNote + bayNote + `<div class="notice info">
       出票 ${order.seated} 张${order.waitlisted ? `，候补 ${order.waitlisted} 张` : ""}。
       座位已同步到<b>开发者模式</b>的座位图。</div>`;
     toast(`出票成功：${order.seated} 张`);

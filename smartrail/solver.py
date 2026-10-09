@@ -27,7 +27,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from itertools import combinations, permutations
-from typing import Iterable, Sequence
+from typing import Collection, Iterable, Sequence
 
 _DEBUG_SOLVER = bool(os.environ.get("SMARTRAIL_SOLVER_DEBUG"))
 """打开后打印每个单元的候选池与退化路径（排查"绕过硬约束"类问题用）。"""
@@ -74,8 +74,10 @@ from .scoring import (
     Scorer,
     accessible_zone_has_free_seat,
     is_care_dependent,
+    is_wheelchair_seat,
     split_units,
     support_people_of,
+    wheelchair_bay_slot_ids,
 )
 
 
@@ -158,6 +160,11 @@ class SolverTables:
         self.ctx = ctx
         self.cfg = config
         self.seats: list[Seat] = list(state.available_seats)
+        #: 轮椅停放位的账目座位槽（全列 4 个）。空集合表示"该编组没有停放位信息"，
+        #: 此时轮椅判定退回旧的"无障碍专区"口径（见 is_wheelchair_seat）。
+        self.bay_slot_ids: frozenset[str] = wheelchair_bay_slot_ids(
+            getattr(state, "formation", None)
+        )
         self.slot = {s.seat_id: i for i, s in enumerate(self.seats)}
         self.by_carriage: dict[int, list[int]] = {}
         for i, seat in enumerate(self.seats):
@@ -167,7 +174,10 @@ class SolverTables:
             self.by_block.setdefault((seat.carriage, seat.row), []).append(i)
         for key, group in self.by_block.items():
             self.by_block[key] = sorted(group, key=lambda i: self.seats[i].col_index)
-        self.fs = FastScorer(ctx.order, ctx.passengers, self.seats, config, ctx.unit_of)
+        self.fs = FastScorer(
+            ctx.order, ctx.passengers, self.seats, config, ctx.unit_of,
+            bay_slot_ids=self.bay_slot_ids,
+        )
         # 复用上下文里算好的判据，避免同一份数据在两张表里各存一份
         self.care_dependent = ctx.care_dependent
         self.helpers = ctx.helpers
@@ -283,6 +293,7 @@ class SolverTables:
             # 单人单元只保留个体分最高的若干座位：1156 个座位里真正带奖励的
             # 只有少数（静音/无障碍/过道/近门），其余全为 0 分且彼此等价。
             out = out[:60]
+            out = self._merge_required_combos(unit, out)
             out = self._enforce_facility_constraints(unit, out)
             if _DEBUG_SOLVER:
                 quiet_before = sum(
@@ -331,10 +342,11 @@ class SolverTables:
         # 否则 16 节编组 × 每厢多个候选会让单次决策退化到秒级。
         global_cap = {1: 60, 2: 72, 3: 60, 4: 48}.get(size, 32)
         out = scored[:global_cap] if scored else fallback[:global_cap]
+        out = self._merge_required_combos(unit, out)
         # 再兜一层：任何出口都必须满足设施硬约束。
         # 不同路径（排内窗口 / size>=5 兜底 / 跨厢）各自过滤容易漏，统一在这里收口。
         out = self._enforce_facility_constraints(unit, out)
-        if not out and not scored and not fallback:
+        if not out:
             # 最后兜底：**按人构造**一个组合。
             # 为什么必须有这一层：`_carriage_combos` 的第一层是"整排连续窗口"，
             # 而二等座一排只有 5 座 —— 8 人单元**永远**窗口不出来，于是候选池为空。
@@ -348,31 +360,48 @@ class SolverTables:
     ) -> list[tuple[tuple[int, ...], float]]:
         """按**每位乘客的需求**直接拼出同车厢组合（最后兜底）。
 
-        规则：先保证轮椅旅客拿到无障碍专区座位（专区不够时按"出票优先"
-        发给普通座位），再用每位乘客个体分最高的座位补齐其余人。
+        规则：**先给需要用停放位的人留位**（轮椅旅客 -> 停放位槽），
+        再用每位乘客个体分最高的座位补齐其余人。
+
+        为什么必须"先给轮椅留位"而不是"轮到谁就按分数选"
+        --------------------------------------------------
+        早期实现按 ``unit.passengers`` 的**顺序**依次挑选：轮到轮椅旅客时才去
+        停放位里挑。真实事故：一张单是「照护人 + 成人 + 轮椅旅客」，
+        轮椅排在最后，前两位已经把同车厢的位置挑走 —— 结果**一个含停放位的
+        组合都没进候选池**，轮椅旅客被发到普通座位并记 Tier 0 违规。
+        而 Tier 0 在本项目里代表"求解器失误"，这个判断是对的：
+        停车位当时空着 4 个，系统本可以安排。
+
+        候选池决定"能不能选"，代价只决定"选哪个" —— 这是本项目反复
+        吃到的同一个教训，所以留位必须发生在**拼组合的阶段**。
         """
         size = unit.size
         if size == 0 or size > len(self.seats):
             return []
-        zone_slots = [i for i, seat in enumerate(self.seats) if seat.in_accessible_zone()]
+        wheel_slots = [
+            i for i, seat in enumerate(self.seats)
+            if is_wheelchair_seat(seat, self.bay_slot_ids)
+        ]
         out: list[tuple[tuple[int, ...], float]] = []
         for carriage, slots in self.by_carriage.items():
             if len(slots) < size:
                 continue
             slot_set = set(slots)
+            # 先用本车厢里可用的停放位安置需要停放位的人，剩下的再按分数补齐
             taken: set[int] = set()
             combo: list[int] = []
             for passenger in unit.passengers:
-                row = self.fs.row(passenger.passenger_id)
                 if passenger.is_mobility_impaired:
-                    # 优先专区；专区不足时退到普通座位（出票优先）
-                    pool = [s for s in zone_slots if s in slot_set and s not in taken]
+                    pool = [s for s in wheel_slots
+                            if s in slot_set and s not in taken]
+                    if not pool:
+                        # 本车厢没有空停放位：退到"出票优先"，发普通座位
+                        pool = [s for s in slots if s not in taken]
                 else:
-                    pool = []
-                if not pool:
                     pool = [s for s in slots if s not in taken]
                 if not pool:
                     break
+                row = self.fs.row(passenger.passenger_id)
                 pick = max(pool, key=lambda slot: row[slot])
                 taken.add(pick)
                 combo.append(pick)
@@ -385,6 +414,48 @@ class SolverTables:
             out.append((tuple(combo), value))
         out.sort(key=lambda item: -item[1])
         return out[:8]
+
+    def _merge_required_combos(
+        self, unit: PassengerUnit, out: list[tuple[tuple[int, ...], float]]
+    ) -> list[tuple[tuple[int, ...], float]]:
+        """把"必须有机会被选中"的组合并进候选池（按需）。
+
+        目前只有一种：**含轮椅停放位的组合**。
+
+        为什么必须显式并进来（真实事故）
+        --------------------------------
+        单元是「照护人 + 成人 + 轮椅旅客」时，轮椅排在最后。候选池按
+        "个体分之和"排序取前 N 个，而停放位槽的个体分只比普通座位高 40 分 ——
+        前两位乘客的高分座位（静音/过道等）足以把含停放位的组合挤出前 60 名。
+        于是 :meth:`_enforce_facility_constraints` 拿到的池子里**一个合法组合都没有**，
+        轮椅旅客被发到普通座位并记 Tier 0 违规。
+
+        Tier 0 的判断是对的：当时 4 个停放位全空，系统本可以安排。
+        这是本项目第四次吃到同一个教训 —— **候选池决定"能不能选"，
+        代价只决定"选哪个"**。凡是"必须满足"的约束，都要在候选池里留位置，
+        不能指望它靠分数自己冒头。
+        """
+        if not any(p.is_mobility_impaired for p in unit.passengers):
+            return out
+        wheel_slots = frozenset(
+            i for i, seat in enumerate(self.seats)
+            if is_wheelchair_seat(seat, self.bay_slot_ids)
+        )
+        if not wheel_slots:
+            return out
+        if any(set(combo) & wheel_slots for combo, _ in out):
+            return out   # 池子里已经有含停放位的组合，不必补充
+        extra = [
+            (combo, value)
+            for combo, value in self._compose_fallback_combos(unit)
+            if set(combo) & wheel_slots
+        ]
+        if not extra:
+            return out
+        seen = {combo for combo, _ in out}
+        merged = list(out) + [item for item in extra if item[0] not in seen]
+        merged.sort(key=lambda item: -item[1])
+        return merged
 
     def _enforce_facility_constraints(
         self, unit: PassengerUnit, combos: list[tuple[tuple[int, ...], float]]
@@ -465,7 +536,9 @@ class SolverTables:
                 if not isinstance(slot, int):
                     continue
                 seat = self.seats[slot]
-                if passenger.is_mobility_impaired and not seat.in_accessible_zone():
+                if passenger.is_mobility_impaired and not is_wheelchair_seat(
+                    seat, self.bay_slot_ids
+                ):
                     zone_bad += 1
                     break
             for passenger, slot in zip(unit.passengers, combo):
@@ -573,7 +646,9 @@ class SolverTables:
             if not isinstance(slot, int):
                 return True
             seat = seats[slot]
-            if passenger.is_mobility_impaired and not seat.in_accessible_zone():
+            if passenger.is_mobility_impaired and not is_wheelchair_seat(
+                seat, self.bay_slot_ids
+            ):
                 return False
             if seat.is_quiet_carriage and passenger.quiet_carriage_blocked:
                 return False
@@ -810,7 +885,15 @@ def assign_greedy(
     """内存级贪心发牌（模式三）。保留 Tier 0 绑定过滤器。"""
     start = time.perf_counter()
     tables = tables or SolverTables(ctx, state, config)
-    scorer = scorer or Scorer(config, accessible_available=accessible_available)
+    # 轮椅停放位信息从编组直接取（全列只有 4 个，是稀缺资源）。
+    bay_slots = wheelchair_bay_slot_ids(getattr(state, "formation", None))
+    bays_total = len(bay_slots)
+    scorer = scorer or Scorer(
+        config,
+        accessible_available=accessible_available,
+        wheelchair_bays_free=bays_total,
+        bay_slot_ids=bay_slots,
+    )
     free = set(range(len(tables.seats)))
     placed: dict[str, int] = {}
     waitlisted: list[str] = []
@@ -820,13 +903,21 @@ def assign_greedy(
     budget_exhausted = False
 
     for unit in _priority_units(ctx):
-        # 专区是否"够本单元用"，要在**每个单元开始前**重算，而不是整单开始时算一次。
-        # 原因是一个真实的误判：一张单里有 8 位轮椅旅客，下单前专区还剩 7 座
-        # （`accessible_available` 采样为 True），前 7 位把这 7 座用掉后，
-        # 第 8 位只能坐普通座位 —— 却被记成 **Tier 0 求解器失误**，
-        # 而它实际是"专区不够"的服务例外，应当记 T5 并生成站车协助提示。
-        if any(p.is_mobility_impaired for p in unit.passengers) and tables._zone_short_for(unit):
-            scorer.accessible_available = False
+        # 停放位余量必须**动态**跟踪：既看下这一单之前已被占用的（state.occupied），
+        # 也看本单前面几个单元刚用掉的（placed）。
+        #
+        # 早期只算 state.occupied，于是同一单里第 2 位轮椅旅客看不到
+        # "停放位已被本单第 1 位用掉"，被误记成 **Tier 0 求解器失误** ——
+        # 而它实际是"停放位不够"的服务例外，应当记 T5 + 站车协助提示。
+        if any(p.is_mobility_impaired for p in unit.passengers):
+            need = sum(1 for p in unit.passengers if p.is_mobility_impaired)
+            used = set(state.occupied)
+            used.update(tables.seats[slot].seat_id for slot in placed.values())
+            left = len(bay_slots - used)
+            # 本单元放不下 -> 后续轮椅旅客按"停放位已满"记服务例外
+            scorer.wheelchair_bays_free = 0 if need > left else left
+            if tables._zone_short_for(unit):
+                scorer.accessible_available = False
         result = _greedy_place_unit(unit, tables, free, placed, ctx, deadline=deadline)
         if time.perf_counter() > deadline:
             budget_exhausted = True
@@ -843,7 +934,9 @@ def assign_greedy(
             notes.append(f"内部一致性告警：单元 {unit.unit_id} 的座位出现重复，已按代价函数回退。")
 
     placed_seats = {pid: tables.seats[slot] for pid, slot in placed.items()}
-    waitlisted.extend(wheelchair_waitlist(placed_seats, ctx, config, notes))
+    waitlisted.extend(wheelchair_waitlist(
+        placed_seats, ctx, config, notes, tables.bay_slot_ids
+    ))
     if budget_exhausted:
         notes.append(
             f"求解时间预算（{config.greedy_time_budget_ms:.0f} ms）已耗尽："
@@ -990,12 +1083,16 @@ def _greedy_place_unit(
 
 
 def wheelchair_waitlist(
-    placed: dict[str, Seat], ctx: OrderContext, config: EngineConfig, notes: list[str]
+    placed: dict[str, Seat],
+    ctx: OrderContext,
+    config: EngineConfig,
+    notes: list[str],
+    bay_slot_ids: Collection[str] | None = None,
 ) -> list[str]:
     """轮椅保底策略 —— **仅在显式配置下才拒票**。
 
     默认（``waitlist_wheelchair_without_accessible = False``）**照常出票**：
-    无障碍专区售罄时给普通座位，并交由 :mod:`smartrail.notices` 生成
+    轮椅停放位售罄时给普通座位，并交由 :mod:`smartrail.notices` 生成
     "请站车协助"的提示。理由是运营现实：拒票直接损失客票收入，而轮椅旅客
     在普通车厢同样可以乘车（需要站车协助上下车与踏板衔接）。
 
@@ -1005,7 +1102,9 @@ def wheelchair_waitlist(
         return []
     out: list[str] = []
     for pid, seat in list(placed.items()):
-        if ctx.passengers[pid].is_mobility_impaired and not seat.in_accessible_zone():
+        if ctx.passengers[pid].is_mobility_impaired and not is_wheelchair_seat(
+            seat, bay_slot_ids
+        ):
             del placed[pid]
             out.append(pid)
             notes.append(
@@ -1086,10 +1185,18 @@ def assign_exact(
 ) -> Solution:
     """分支限界搜索全局最优解；预算耗尽时返回当前最优解。"""
     start = time.perf_counter()
-    scorer = Scorer(config, accessible_available=accessible_available)
+    tables = SolverTables(ctx, state, config)
+    # 评分器必须带上轮椅停放位信息，否则**事后评估**会把"坐在停放位上"
+    # 误判成"轮椅旅客拿到了普通座位"，凭空产生 Tier 0 违规
+    # （实测：座位明明是停放位 04车01A，违规却说"不是轮椅停放位"）。
+    scorer = Scorer(
+        config,
+        accessible_available=accessible_available,
+        wheelchair_bays_free=len(tables.bay_slot_ids),
+        bay_slot_ids=tables.bay_slot_ids,
+    )
     budget_ms = config.default_exactness_budget if time_budget_ms is None else time_budget_ms
     node_limit = node_limit or config.max_branch_nodes
-    tables = SolverTables(ctx, state, config)
     units = _priority_units(ctx)
     notes: list[str] = []
 
@@ -1226,7 +1333,9 @@ def assign_exact(
         )
     placed_seats = {pid: tables.seats[slot] for pid, slot in best_placed.items()}
     waitlisted = [pid for pid in ctx.passengers if pid not in placed_seats]
-    waitlisted.extend(wheelchair_waitlist(placed_seats, ctx, config, notes))
+    waitlisted.extend(wheelchair_waitlist(
+        placed_seats, ctx, config, notes, tables.bay_slot_ids
+    ))
     cost, violations = evaluate_placement(placed_seats, ctx, scorer)
     # incumbent（贪心解）在候选更优时可能已被替换；这里补齐它的可解释性备注，
     # 否则"为什么某位乘客进了候补"会在最终结果里丢失。

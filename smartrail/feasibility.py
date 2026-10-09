@@ -5,9 +5,10 @@
 之前只报"候补 N 人"，用户看不出**为什么**。而这个引擎里有几类硬约束会让
 一张订单**结构性地**无法满足，跟车厢空不空没关系：
 
-* 含轮椅旅客的订单必须有无障碍专区座位，专区只有 10 座，售罄就真的没辙；
+* 含轮椅旅客的订单要占用**轮椅固定停放位**（全列仅 4 个，独立于座位票额），
+  停放位售罄后可经确认改出普通坐票；
 * 含婴儿/幼童的订单若被声明为硬绑定，整单必须同车厢，车厢余量不足就会失败；
-* 同一张订单里塞进两位轮椅旅客 + 一堆家属时，专区的可用座位数可能不够。
+* 同一张订单里塞进多位轮椅旅客时，停放位可能不够（4 个），超出者改出普通坐票。
 
 因此本模块做三件事：
 
@@ -25,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
 from .models import BondType, Order, Seat, Solution, SupportNeed
+from .scoring import wheelchair_bay_slot_ids
 
 # 结果分档：让"满足 / 部分满足 / 需现场处理 / 无法满足"一眼可分
 OUTCOME_LEVELS: dict[str, str] = {
@@ -39,7 +41,7 @@ OUTCOME_LEVELS: dict[str, str] = {
 FEASIBILITY_CODES: dict[str, str] = {
     "OK": "可满足",
     "NO_SEATS": "全车余票不足（唯一会候补的情形）",
-    "NO_WHEELCHAIR_SLOT": "无障碍专区不足，已出票并转站车协助",
+    "NO_WHEELCHAIR_SLOT": "轮椅固定停放位不足，已出票并转站车协助",
     "WHEELCHAIR_OVER_QUOTA": "单张订单轮椅旅客偏多，已出票（超出者坐普通座位）",
     "HARD_BOND_INFEASIBLE": "难以全部同车厢，已出票并生成现场调剂提示",
 }
@@ -104,13 +106,14 @@ def analyse_order(
     all_seats: Sequence[Seat],
     occupied: Iterable[str] = (),
     config: Any | None = None,
+    formation: Any | None = None,
 ) -> OrderFeasibility:
     """判断一张订单**会遇到什么情况**，以及是否需要向用户确认。
 
     出票优先是本引擎的第一原则（见 :mod:`smartrail.config` 的"出票策略"段）：
 
     * **只有"全车无空座"才 ``blocking``**（这时的候补是事实，不是策略）；
-    * 特殊席位（无障碍专区、同车厢相邻）不够时**照常出票**，
+    * 特殊席位（轮椅停放位、同车厢相邻）不够时**照常出票**，
       转为 ``advisory`` + 一条可执行提示；
     * 需要用户拍板的情形给出 :attr:`OrderFeasibility.question`，
       由调用方询问后再出票 —— 而不是替用户拒绝。
@@ -120,7 +123,10 @@ def analyse_order(
 
     occupied_set = set(occupied)
     free = [seat for seat in all_seats if seat.seat_id not in occupied_set]
-    zone_free = [seat for seat in free if seat.in_accessible_zone()]
+    # 轮椅容量看的是**固定停放位**（全列 4 个，独立于座位票额），
+    # 而不是"无障碍车厢里的普通座位"。早期按后者算，把容量夸大了 5 倍。
+    bay_slots = wheelchair_bay_slot_ids(formation) if formation is not None else frozenset()
+    bay_free = sorted(bay_slots - occupied_set)
     wheelchair_count = sum(
         1 for passenger in order.passengers if passenger.is_mobility_impaired
     )
@@ -129,7 +135,7 @@ def analyse_order(
         order_id=order.order_id,
         passengers=len(order.passengers),
         wheelchair_count=wheelchair_count,
-        zone_available=len(zone_free),
+        zone_available=len(bay_free),
         same_carriage_required=same_carriage,
     )
 
@@ -138,7 +144,7 @@ def analyse_order(
         per_carriage[seat.carriage] = per_carriage.get(seat.carriage, 0) + 1
     best_carriage = max(per_carriage.values(), default=0)
     result.details.append(f"当前最空的单个车厢余票 {best_carriage} 个")
-    result.details.append(f"无障碍专区余票 {len(zone_free)} 个")
+    result.details.append(f"轮椅固定停放位余票 {len(bay_free)} 个")
 
     # ---- 唯一真正"拒票"的情形：全车确实没有空座 ----
     if not free:
@@ -166,10 +172,10 @@ def analyse_order(
         result.severity = "advisory"
         result.message = (
             f"本单有 {wheelchair_count} 位轮椅旅客，超过单张订单建议上限（{limit} 位）："
-            f"**可以出票**，但无障碍专区座位可能不够，超出者将安排普通座位并转站车协助。"
+            f"**可以出票**，但轮椅固定停放位可能不够，超出者将改出普通坐票并转站车协助。"
         )
         result.question = (
-            f"本单 {wheelchair_count} 位轮椅旅客，无障碍专区只有 10 座"
+            f"本单 {wheelchair_count} 位轮椅旅客，轮椅固定停放位只有 4 个"
             f"（单张订单建议不超过 {limit} 位）。是否仍然出票？"
             f"（超出者坐普通座位，列车员协助上下车）"
         )
@@ -179,17 +185,17 @@ def analyse_order(
         # 不 return：继续检查专区余量，把更具体的情况也带上
 
     # 2) 专区余票不足：照常出票 + 站车协助（这是运营例外，不是拒票理由）
-    if wheelchair_count and len(zone_free) < wheelchair_count:
+    if wheelchair_count and len(bay_free) < wheelchair_count:
         result.code = "NO_WHEELCHAIR_SLOT"
         result.severity = "advisory"
-        short = wheelchair_count - len(zone_free)
+        short = wheelchair_count - len(bay_free)
         result.message = (
-            f"本单有 {wheelchair_count} 位轮椅旅客，无障碍专区仅剩 {len(zone_free)} 个空位："
+            f"本单有 {wheelchair_count} 位轮椅旅客，轮椅固定停放位仅剩 {len(bay_free)} 个："
             f"**仍然出票**，其中 {short} 位将安排普通座位，并生成站车协助提示。"
         )
         if not result.question:
             result.question = (
-                f"无障碍专区只剩 {len(zone_free)} 个空位，本单有 {wheelchair_count} 位"
+                f"轮椅固定停放位只剩 {len(bay_free)} 个，本单有 {wheelchair_count} 位"
                 f"轮椅旅客。是否接受『照常出票 + 站车协助』？"
             )
         result.details.append(

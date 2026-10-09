@@ -324,6 +324,57 @@ class Seat:
 
 
 @dataclass(frozen=True)
+class WheelchairBay:
+    """轮椅固定停放位（**独立资源，不占普通座位票额**）。
+
+    为什么必须与 Seat 分开
+    ----------------------
+    早期实现把轮椅位当成"无障碍专区里的普通座位"（04/12 车第 1-2 排共 20 座），
+    这是错的，会同时算错两件事：
+
+    1. **座位票额**：这 20 个座位被从普通票额里"扣掉"了，实际它们本来
+       就该卖给别人 —— 04 车定员 78 座里就包含它们；
+    2. **轮椅容量**：真实动车组每节无障碍车厢只有 **2 个**轮椅固定停放位
+       （带安全带/绑带的独立空间），不是 10 个。按 10 算会让"轮椅位够不够"
+       的判断过于乐观 5 倍。
+
+    停放位与"就座"的关系
+    --------------------
+    轮椅旅客本人是**固定在停放位**上的（不坐座位），但系统里必须给他记一个
+    座位号才能出票与画座位图。约定：每个停放位绑定**一个专属座位槽**
+    （``slot_seat_id``），它就是该停放位的账目载体 —— 一位轮椅占一个槽，
+    因此"4 个停放位"天然等价于"4 个专属槽"。
+
+    这些槽仍是**真实座位**（08/16 车的定员里包含它们），只是被约定为
+    轮椅优先使用；停放位空着时可以照常卖给普通旅客 —— 这正是
+    "不占普通座位票额"的含义。
+    """
+
+    bay_id: str
+    carriage: int
+    #: 停放位所在的大致位置（排号），用于就近安排的代价计算
+    row: int = 1
+    #: 该停放位的专属座位槽（轮椅旅客的记账座位号）
+    slot_seat_id: str = ""
+    #: 旁边的陪同座位（现实中与停放位同排，供同行人使用）
+    companion_seats: tuple[str, ...] = ()
+
+    @property
+    def label(self) -> str:
+        return f"{self.carriage:02d}车 轮椅位"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "bay_id": self.bay_id,
+            "carriage": self.carriage,
+            "row": self.row,
+            "label": self.label,
+            "slot_seat_id": self.slot_seat_id,
+            "companion_seats": list(self.companion_seats),
+        }
+
+
+@dataclass(frozen=True)
 class Carriage:
     """车厢属性标签。"""
 
@@ -336,6 +387,8 @@ class Carriage:
     has_accessible_zone: bool = False
     has_toilet: bool = False
     door_positions: tuple[int, ...] = (1, 17)
+    #: 轮椅固定停放位数量（不占座位票额）
+    wheelchair_bays: int = 0
 
     def col_options(self) -> tuple[str, ...]:
         return self.columns
@@ -343,11 +396,12 @@ class Carriage:
 
 @dataclass(frozen=True)
 class TrainFormation:
-    """编组：车厢列表 + 座位索引。"""
+    """编组：车厢列表 + 座位索引 + 轮椅停放位。"""
 
     train_code: str
     carriages: tuple[Carriage, ...]
     seats: tuple[Seat, ...]
+    wheelchair_bays: tuple[WheelchairBay, ...] = ()
 
     def by_id(self) -> dict[str, Seat]:
         return {s.seat_id: s for s in self.seats}
@@ -357,6 +411,19 @@ class TrainFormation:
             if s.seat_id == seat_id:
                 return s
         raise KeyError(seat_id)
+
+    def bay(self, bay_id: str) -> WheelchairBay:
+        for item in self.wheelchair_bays:
+            if item.bay_id == bay_id:
+                return item
+        raise KeyError(bay_id)
+
+    @property
+    def total_wheelchair_bays(self) -> int:
+        return len(self.wheelchair_bays)
+
+    def bays_in(self, carriage: int) -> tuple[WheelchairBay, ...]:
+        return tuple(b for b in self.wheelchair_bays if b.carriage == carriage)
 
     @property
     def seat_ids(self) -> tuple[str, ...]:

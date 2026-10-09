@@ -319,6 +319,7 @@ def book_ticket_order(
     preference = preference or SeatPreference()
     order_size = len(profiles)
     verdict = evaluate_preference(store, class_code, order_size, preference)
+    wheelchair = evaluate_wheelchair_bays(store, profiles)
 
     order = build_order_from_profiles(profiles, order_id=order_id,
                                       preference=preference)
@@ -388,6 +389,7 @@ def book_ticket_order(
         "split": actually_split,
         "color_index": color,
         "verdict": verdict.to_dict(),
+        "wheelchair": wheelchair.to_dict(),
         "train_code": store.formation.train_code,
     }
     store.record_order(order_record)
@@ -395,6 +397,7 @@ def book_ticket_order(
         "ok": len(assignments) > 0,
         "errors": [],
         "verdict": verdict.to_dict(),
+        "wheelchair": wheelchair.to_dict(),
         "order": order_record,
         "notes": list(getattr(solution, "notes", ()) or ()),
         "tier0": len(getattr(solution, "tier0_violations", ()) or ()),
@@ -411,6 +414,69 @@ def _engine_from_store(store: DevStore):
         # 传单个字符串会被逐字符迭代（clustering 里已加显式拦截）。
         engine.state.mark_occupied(set(store.occupied))
     return engine
+
+
+@dataclass
+class WheelchairOutcome:
+    """轮椅停放位的安排结论（用户模式要据此提示/询问）。"""
+
+    requested: int
+    """这一单里有几位轮椅旅客。"""
+
+    bays_free: int
+    """可用停放位数量（下单前）。"""
+
+    bays_assigned: int
+    """实际分配到停放位的人数。"""
+
+    needs_confirmation: bool
+    """停放位不够 -> 需要询问用户是否同意改出普通坐票。"""
+
+    question: str = ""
+    """要问用户的原话。"""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "requested": self.requested,
+            "bays_free": self.bays_free,
+            "bays_assigned": self.bays_assigned,
+            "needs_confirmation": self.needs_confirmation,
+            "question": self.question,
+        }
+
+
+def evaluate_wheelchair_bays(
+    store: DevStore, profiles: Sequence[PassengerProfile]
+) -> WheelchairOutcome:
+    """判断这一单的轮椅停放位够不够，不够就给出询问文案。
+
+    需求原文："每一节无障碍车厢（4，12）各有两个轮椅固定停放位，
+    不占正常座位票额，如果 4 个轮椅位都卖完了，可在询问后出正常坐票。"
+
+    注意这是**询问后出票**，不是拒票 —— 与项目一贯的"出票优先"原则一致。
+    """
+    from ..models import SupportNeed
+
+    needed = sum(
+        1 for profile in profiles
+        if SupportNeed.WHEELCHAIR in profile.support_needs()
+    )
+    free = len(store.free_bays())
+    if needed == 0:
+        return WheelchairOutcome(0, free, 0, False)
+    assigned = min(needed, free)
+    if needed <= free:
+        return WheelchairOutcome(needed, free, assigned, False)
+    short = needed - free
+    total = len(store.formation.wheelchair_bays)
+    question = (
+        f"本单有 {needed} 位轮椅旅客，但轮椅固定停放位仅剩 {free} 个"
+        f"（全列共 {total} 个，分布在 04 车与 12 车）。"
+        f"是否同意其中 {short} 位改出**普通坐票**？"
+        f"（轮椅停放位独立于座位票额，普通坐票仍可正常出票，"
+        f"站车将协助上下车）"
+    )
+    return WheelchairOutcome(needed, free, assigned, True, question)
 
 
 # ---------------------------------------------------------------------------

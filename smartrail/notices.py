@@ -27,9 +27,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Collection, Iterable
 
 from .models import AdjacencyStatus, BondType, Notice, Seat, SupportNeed
+from .scoring import is_wheelchair_seat
 
 if TYPE_CHECKING:  # pragma: no cover
     from .config import EngineConfig
@@ -176,19 +177,26 @@ def build_notices(
     ctx: "OrderContext",
     config: "EngineConfig",
     adjacency: AdjacencyStatus | None = None,
+    bay_slot_ids: Collection[str] | None = None,
 ) -> list[Notice]:
     """生成面向旅客 / 乘务员的待办提示。
 
     覆盖四类"已出票但需要现场处理"的情形，以及候补这一种真正的未出票情形。
+
+    ``bay_slot_ids``：轮椅停放位的账目座位槽。**必须传**，否则轮椅旅客
+    坐在停放位上也会被误判成"专区已满、发了普通座位"，生成假的站车协助提示
+    （实测发生过：座位明明是 ``04车01A``，提示却说"无障碍专区已满"）。
     """
     if adjacency is None:
         adjacency = assess_adjacency(placed, ctx, config)
     notices: list[Notice] = []
 
-    # 1) 轮椅旅客：没有无障碍座位，但已出票（普通座位）
+    # 1) 轮椅旅客：没拿到停放位，但已出票（普通座位）
     for pid, seat in placed.items():
         passenger = ctx.passengers[pid]
-        if passenger.is_mobility_impaired and not seat.in_accessible_zone():
+        if passenger.is_mobility_impaired and not is_wheelchair_seat(
+            seat, bay_slot_ids
+        ):
             notices.append(
                 Notice(
                     passenger_id=pid,
@@ -197,8 +205,8 @@ def build_notices(
                     seat_id=seat.seat_id,
                     carriage=seat.carriage,
                     message=(
-                        f"无障碍专区已满，已为 {pid} 出票普通座位 {seat.seat_id}。"
-                        "请站车协助（无障碍踏板 / 就近调剂到专区）。"
+                        f"轮椅固定停放位已满，已为 {pid} 出票普通座位 {seat.seat_id}。"
+                        "请站车协助（无障碍踏板 / 就近调剂到停放位）。"
                     ),
                 )
             )

@@ -16,7 +16,10 @@
 
 from __future__ import annotations
 
+from typing import Collection
+
 from .config import EngineConfig
+from .scoring import is_wheelchair_seat
 from .models import BondType, DeclaredBehavior, Order, Passenger, Seat, SeatFeature, SupportNeed
 
 
@@ -30,6 +33,7 @@ class FastScorer:
         seats: list[Seat],
         config: EngineConfig,
         unit_of: dict[str, object] | None = None,
+        bay_slot_ids: Collection[str] | None = None,
     ) -> None:
         self.order = order
         self.passengers = passengers
@@ -48,7 +52,12 @@ class FastScorer:
         # 座位属性以并行数组预展开：热循环里直接下标取值，避免反复做
         # frozenset 成员测试与对象属性查找（profiler 显示这是第一热点）。
         self._quiet_flag: list[bool] = [s.is_quiet_carriage for s in seats]
-        self._accessible: list[bool] = [s.in_accessible_zone() for s in seats]
+        # 轮椅落点：有停放位信息时只认停放位槽，否则退回无障碍专区口径。
+        # 两处（此处与 SolverTables.zone_slots / is_wheelchair_seat）必须口径一致，
+        # 否则会出现"快速打分器认为某座位可用、候选池却排除了它"这类矛盾。
+        self._accessible: list[bool] = [
+            is_wheelchair_seat(s, bay_slot_ids) for s in seats
+        ]
         self._aisle: list[bool] = [s.is_aisle for s in seats]
         self._is_window: list[bool] = [SeatFeature.WINDOW in s.features for s in seats]
         self._near_door: list[bool] = [SeatFeature.NEAR_DOOR in s.features for s in seats]

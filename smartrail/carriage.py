@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .models import Carriage, Seat, SeatFeature, TrainFormation
+from .models import Carriage, Seat, SeatFeature, TrainFormation, WheelchairBay
 
 # 国铁常见的座位布局：列号 + 列型
 _LAYOUTS: dict[str, tuple[str, str, int]] = {
@@ -96,6 +96,9 @@ class CarriageSpec:
 
     ``blocks`` 非空时按区段拼装；为空时退化为"整节一种席别"
     （用 ``class_code`` + ``rows``，兼容旧调用与迷你编组）。
+
+    ``wheelchair_bays`` 是**独立于座位**的轮椅固定停放位数量：
+    它不参与 ``seat_total()``，因此不会挤占普通座位票额。
     """
 
     number: int
@@ -107,6 +110,9 @@ class CarriageSpec:
     door_rows: tuple[int, ...] = (1, 17)
     blocks: tuple[Block, ...] = field(default_factory=tuple)
     note: str = ""
+    wheelchair_bays: int = 0
+    #: 轮椅停放位所在排号（用于就近安排同行人）
+    bay_row: int = 1
 
     def effective_blocks(self) -> tuple[Block, ...]:
         if self.blocks:
@@ -146,9 +152,10 @@ def _build_carriage(spec: CarriageSpec) -> Carriage:
         is_quiet_carriage=spec.is_quiet_carriage,
         has_accessible_zone=bool(spec.accessible_rows) or any(
             block.accessible_rows for block in blocks
-        ),
+        ) or spec.wheelchair_bays > 0,
         has_toilet=spec.has_toilet,
         door_positions=tuple(spec.door_rows),
+        wheelchair_bays=spec.wheelchair_bays,
     )
 
 
@@ -196,6 +203,7 @@ def build_formation(
     """
     carriages: list[Carriage] = []
     seats: list[Seat] = []
+    bays: list[WheelchairBay] = []
     seen_ids: set[str] = set()
     for spec in specs:
         carriage = _build_carriage(spec)
@@ -255,7 +263,38 @@ def build_formation(
                             carriage_columns=columns,
                         )
                     )
-    return TrainFormation(train_code=train_code, carriages=tuple(carriages), seats=tuple(seats))
+        # 轮椅停放位在本车厢座位建好之后登记，这样才能带上专属座位槽。
+        # **停放位本身不是 Seat**，所以不占座位票额 —— 04 车仍是 78 个二等座。
+        # 每个停放位绑定本排的一个座位作为"账目载体"（轮椅旅客的座位号），
+        # 因此"2 个停放位"等价于"2 个专属槽"。
+        bay_row_seats = [
+            seat for seat in seats
+            if seat.carriage == carriage.number and seat.row == spec.bay_row
+        ]
+        for position in range(spec.wheelchair_bays):
+            slot = (
+                bay_row_seats[position].seat_id
+                if position < len(bay_row_seats) else ""
+            )
+            companion = tuple(
+                seat.seat_id for seat in bay_row_seats
+                if seat.seat_id != slot and seat.col in ("C", "D")
+            )[:2]
+            bays.append(
+                WheelchairBay(
+                    bay_id=f"{carriage.number:02d}车W{position + 1}",
+                    carriage=carriage.number,
+                    row=spec.bay_row,
+                    slot_seat_id=slot,
+                    companion_seats=companion,
+                )
+            )
+    return TrainFormation(
+        train_code=train_code,
+        carriages=tuple(carriages),
+        seats=tuple(seats),
+        wheelchair_bays=tuple(bays),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +334,8 @@ def _second_class_block(seats: int, *, accessible_rows: tuple[int, ...] = ()) ->
 def g25_16_car_formation(
     train_code: str = "G25",
     quiet_carriages: tuple[int, ...] = (3, 11),
+    accessible_carriages: tuple[int, ...] = (4, 12),
+    wheelchair_bays_per_accessible_car: int = 2,
     aisle_weight: float = 2.0,
     near_door_rows: int = 3,
     near_toilet_rows: int = 3,
@@ -306,20 +347,31 @@ def g25_16_car_formation(
     | 01 | TC01 一等/商务座车 | 32+5 | 一等座 2+2 × 8 排 + 商务座 1+2 × 2 排 |
     | 02 | M02 二等座车 | 93 | 二等座 3+2，18 排 + 3 座 |
     | 03 | TP03 二等座车 | 93 | 同上，**静音车厢** |
-    | 04 | MH04 带残疾人卫生间 | 78 | 二等座 3+2，15 排 + 3 座 |
-    | 05 | MB05 二等/餐车 | 83 | 二等座 3+2，16 排 + 3 座 |
+    | 04 | MH04 带残疾人卫生间 | 78 | 二等座 + **2 个轮椅停放位** |
+    | 05 | MB05 二等座/餐车 | 83 | 二等座 3+2，16 排 + 3 座 |
     | 06 | TP06 二等座车 | 93 | 同 02 |
     | 07 | M07 二等座车 | 93 | 同 02 |
     | 08 | TC08 二等/商务座车 | 43+6 | 二等座 + 商务座 1+2 × 2 排 |
-    | 09-16 | 与 01-08 同型 | 同 | **11 车为静音车厢** |
+    | 09-16 | 与 01-08 同型 | 同 | **11 车为静音车厢**，12 车无障碍 |
 
-    合计 **1417 座**。无障碍专区设在 04 车（带残疾人卫生间），
-    与车型图上的 MH04 对应。
+    合计 **1238 座**（座位）+ **4 个轮椅停放位**。
+
+    轮椅停放位是**独立资源**
+    ------------------------
+    每节无障碍车厢（04、12）各 **2 个**轮椅固定停放位，全列 4 个。
+    它们 **不占座位票额** —— 04 车仍是 78 个二等座，可以照常卖给别人。
+
+    早期实现把这 20 个座位标成"无障碍专区"，等于同时算错两件事：
+
+    1. 座位票额被凭空扣掉 20 个；
+    2. 轮椅容量被夸大 5 倍（真实动车组每节无障碍车厢只有 2 个停放位）。
     """
     specs: list[CarriageSpec] = []
     for number in range(1, 17):
         is_quiet = number in quiet_carriages
+        is_accessible = number in accessible_carriages
         base = number if number <= 8 else number - 8
+        bays = wheelchair_bays_per_accessible_car if is_accessible else 0
         if base == 1:
             # TC01 一等/商务座车：图上定员「32/5」
             # 一等座 2+2 × 8 排 = 32
@@ -332,8 +384,7 @@ def g25_16_car_formation(
             accessible = ()
             toilet = False
         elif base == 4:
-            # 带残疾人卫生间：二等座 78，无障碍专区设在前两排
-            blocks = (_second_class_block(78, accessible_rows=(1, 2)),)
+            blocks = (_second_class_block(78),)
             accessible = ()
             toilet = True
         elif base == 5:
@@ -355,6 +406,8 @@ def g25_16_car_formation(
                 door_rows=(1, sum(block.rows for block in blocks)),
                 blocks=blocks,
                 note=G25_CAR_TYPES[number],
+                wheelchair_bays=bays,
+                bay_row=1,
             )
         )
     formation = build_formation(
@@ -378,6 +431,12 @@ def g25_16_car_formation(
     }
     if mismatch:
         raise ValueError(f"编组定员与车型图不符：{mismatch}")
+    expected_bays = wheelchair_bays_per_accessible_car * len(accessible_carriages)
+    if len(formation.wheelchair_bays) != expected_bays:
+        raise ValueError(
+            f"轮椅停放位数量不符：期望 {expected_bays}，"
+            f"实际 {len(formation.wheelchair_bays)}"
+        )
     return formation
 
 

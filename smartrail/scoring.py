@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import combinations
-from typing import Iterable, Sequence
+from typing import Any, Collection, Iterable, Sequence
 
 from .config import EngineConfig
 from .models import (
@@ -60,6 +60,7 @@ NOT_TOGETHER = "T4_NOT_SAME_ROW"
 QUIET_SOLO_ADULT = "T5_QUIET_SOLO_ADULT"
 FACILITY_MATCH = "T5_FACILITY_MATCH"
 ACCESSIBLE_MATCH = "T5_ACCESSIBLE_MATCH"
+BAY_MISUSE = "T3_WHEELCHAIR_BAY_MISUSE"
 COMPANION_TOGETHER = "T5_COMPANION_TOGETHER"
 CHILD_ADJACENT = "T5_CHILD_ADJACENT"
 
@@ -123,6 +124,53 @@ class CostTerm:
         )
 
 
+def is_wheelchair_seat(seat: Seat, bay_slot_ids: Collection[str] | None = None) -> bool:
+    """这个座位能不能作为轮椅旅客的落点。
+
+    判据随建模精度演进：
+
+    * **有停放位信息时**（新模型）：只有停放位的账目槽算数。
+      轮椅位是独立资源（全列 4 个），"无障碍车厢里的普通座位"并不等于轮椅位。
+    * **没有停放位信息时**（旧调用路径 / 迷你编组）：退回"无障碍专区"判据，
+      保持向后兼容。
+
+    早期只有一种判据（``seat.in_accessible_zone()``），把 20 个普通座位当成了
+    轮椅容量，比真实的 4 个夸大了 5 倍。
+    """
+    if bay_slot_ids:
+        return seat.seat_id in bay_slot_ids
+    return seat.in_accessible_zone()
+
+
+def wheelchair_bay_slot_ids(formation: Any | None) -> frozenset[str]:
+    """轮椅停放位的"账目座位槽"集合。
+
+    每个停放位绑定一个真实座位作为账目载体（见
+    :class:`~smartrail.models.WheelchairBay`）。轮椅旅客本人固定在停放位上，
+    但出票与座位图需要一个座位号，于是用这个槽来记账。
+    """
+    if formation is None:
+        return frozenset()
+    bays = getattr(formation, "wheelchair_bays", ()) or ()
+    return frozenset(b.slot_seat_id for b in bays if b.slot_seat_id)
+
+
+def wheelchair_bays_free(formation: Any | None, occupied: Iterable[str]) -> int:
+    """还剩几个**空**的轮椅停放位。
+
+    这才是"轮椅位够不够"的正确判据。早期用"无障碍专区还有没有空座位"
+    （20 个普通座位）来判断，把容量夸大了 5 倍。
+    """
+    if formation is None:
+        return 0
+    occupied_set = set(occupied)
+    return sum(
+        1
+        for bay in (getattr(formation, "wheelchair_bays", ()) or ())
+        if bay.slot_seat_id and bay.slot_seat_id not in occupied_set
+    )
+
+
 def accessible_zone_has_free_seat(
     all_seats: Sequence[Seat] | None, occupied: Iterable[str]
 ) -> bool:
@@ -149,10 +197,27 @@ def accessible_zone_has_free_seat(
 class Scorer:
     """代价评估器：无状态（除配置外），可安全复用与并发调用。"""
 
-    def __init__(self, config: EngineConfig, accessible_available: bool = True) -> None:
+    def __init__(
+        self,
+        config: EngineConfig,
+        accessible_available: bool = True,
+        wheelchair_bays_free: int | None = None,
+        bay_slot_ids: frozenset[str] | None = None,
+    ) -> None:
         self.cfg = config
         self.accessible_available = accessible_available
         """无障碍专区是否还有可用座位（决定轮椅无专区的记法，见上方说明）。"""
+        self.wheelchair_bays_free = wheelchair_bays_free
+        """还剩几个空的轮椅停放位。``None`` 表示不跟踪（旧调用路径）。
+
+        这是比"专区有没有空座"更准确的判据：一个座位可以随便卖，
+        但轮椅停放位只有 4 个。"""
+        self.bay_slot_ids = bay_slot_ids or frozenset()
+        """停放位的账目座位槽。坐在这些槽上 = 使用了轮椅停放位。"""
+
+    def is_bay_slot(self, seat: Seat) -> bool:
+        """这个座位是不是某个轮椅停放位的账目槽。"""
+        return seat.seat_id in self.bay_slot_ids
 
     # ------------------------------------------------------------------
     # 单项代价：乘客 × 座位
@@ -170,23 +235,34 @@ class Scorer:
             terms.append(CostTerm(code, tier, value, (p.passenger_id,), detail))
 
         # ---- Tier 0：硬约束设施 ----
-        if p.is_mobility_impaired and not seat.in_accessible_zone():
-            if self.accessible_available:
-                # 专区还有空位却没给他：求解器失误，记为 Tier 0
+        # 轮椅旅客的正确落点是**轮椅固定停放位**（独立资源，全列 4 个），
+        # 而不是"无障碍专区里的普通座位"。判据顺序很重要：
+        #   1. 拿到停放位槽  -> 正好，Tier 5 奖励；
+        #   2. 没拿到槽但**还有空停放位** -> 求解器失误，Tier 0；
+        #   3. 停放位已满 -> 运营事实，出票 + 站车协助，不记 Tier 0。
+        is_bay = self.is_bay_slot(seat)
+        if p.is_mobility_impaired and not is_bay:
+            bays_left = self.wheelchair_bays_free
+            # bays_left 为 None 时退回旧的"专区是否有空座"判据（兼容旧调用）
+            has_capacity = (
+                self.accessible_available if bays_left is None else bays_left > 0
+            )
+            if has_capacity:
                 add(
                     WHEELCHAIR_NO_ZONE,
                     0,
                     cfg.t0_wheelchair_no_accessible,
-                    f"座位 {seat.seat_id} 非无障碍专区（专区仍有空位）",
+                    f"座位 {seat.seat_id} 不是轮椅停放位"
+                    + (f"（仍有 {bays_left} 个空停放位）" if bays_left else "（专区仍有空位）"),
                 )
             else:
-                # 专区已售罄：这是运营例外（出票优先 + 站车协助），
+                # 停放位已满：运营例外（出票优先 + 站车协助），
                 # 记一条**低层级**的服务条目，保证可解释性但不污染 Tier 0 指标。
                 add(
                     WHEELCHAIR_ZONE_SOLD_OUT,
                     5,
                     cfg.b5_accessible_match,
-                    f"座位 {seat.seat_id} 非无障碍专区（专区已售罄，已出票并转站车协助）",
+                    f"座位 {seat.seat_id} 非轮椅停放位（4 个停放位已满，已出票并转站车协助）",
                 )
 
         # ---- Tier 3：高权重排斥 ----
@@ -211,12 +287,24 @@ class Scorer:
                 )
         if seat.in_accessible_zone() and not p.is_mobility_impaired:
             add(ACCESSIBLE_MISUSE, 3, cfg.t3_accessible_misuse, "无障碍专区被无需求旅客占用")
+        # 普通旅客占用了轮椅停放位的账目槽：停放位稀缺（全列 4 个），
+        # 必须留出排斥力，否则会被普通旅客先订走。
+        if is_bay and not p.is_mobility_impaired:
+            add(
+                BAY_MISUSE,
+                3,
+                cfg.t3_accessible_misuse,
+                "轮椅停放位被无需求旅客占用",
+            )
 
         # ---- Tier 5：设施精准匹配 ----
         reward = 0.0
         # 无障碍专区给予轮椅乘客的专属奖励：只有真正需要用的人才有资格拿，
         # 否则"挤进无障碍专区"会变成所有乘客的通用加分项。
         if seat.in_accessible_zone() and p.is_mobility_impaired:
+            reward += cfg.b5_accessible_match
+        # 拿到轮椅停放位：这是轮椅旅客的**正确落点**，给足奖励
+        if is_bay and p.is_mobility_impaired:
             reward += cfg.b5_accessible_match
         if p.preference_aisle and seat.is_aisle:
             reward += cfg.b5_facility_match

@@ -111,21 +111,21 @@ try:
 
     print()
     print("=== 4) 出票优先：特殊席位不够也照常出票 + 提示/询问 ===")
-    # 单次请求内自足：先把无障碍专区占满，再放溢出的单。
+    # 单次请求内自足：先把**轮椅固定停放位**占满，再放溢出的单。
     # 不能依赖"上一节刚好占掉了座位"——那是测试之间的隐式耦合。
     #
-    # 专区分两处（04 车与 12 车，各 2 排 = 10 座），合计 **20 座**。
-    # 早期这里写死"7 张单占满 10 座"，是按"只有 04 车"的旧编组算的；
-    # 编组改成 04+12 后就占不满了，于是"站车协助提示"不再触发。
-    # 现在按实际座位数生成填满订单，编组再变也不会失效。
+    # 停放位是独立资源：04 车与 12 车各 2 个，全列共 **4 个**。
+    # 早期这里按"无障碍专区里的普通座位"算（20 座），是错的 ——
+    # 那样既抢占了普通座位票额，又把轮椅容量夸大了 5 倍。
     from smartrail.api import service as _service
 
     engine = _service.create_engine()
-    zone_seats = sum(1 for s in engine.formation.seats if s.in_accessible_zone())
-    print(f"      无障碍专区实际座位数：{zone_seats}")
+    bay_count = engine.formation.total_wheelchair_bays
+    print(f"      轮椅固定停放位：{bay_count} 个"
+          f"（{sorted({b.carriage for b in engine.formation.wheelchair_bays})} 车）")
     # 每张填满单放 2 位轮椅 -> 需要的订单数
     per_order = 2
-    fill_orders = -(-zone_seats // per_order)
+    fill_orders = -(-bay_count // per_order)
     orders = [
         {
             "order_id": f"FILL-{n}",
@@ -138,7 +138,7 @@ try:
     orders.append(
         {
             "order_id": "LATE-ONE",
-            "note": "专区满后到来的轮椅旅客",
+            "note": "停放位满后到来的轮椅旅客",
             "passengers": [{"key": "wheelchair"}, {"key": "caregiver"}],
         }
     )
@@ -154,7 +154,7 @@ try:
     check(status == 200, "接口可用")
     check(
         summary["seated_passengers"] == summary["requested_passengers"],
-        f"专区售罄后仍然全员出票"
+        f"停放位售罄后仍然全员出票"
         f"（{summary['seated_passengers']}/{summary['requested_passengers']}）",
     )
     check(summary["waitlisted_passengers"] == 0, "没有因专区售罄而候补")
@@ -162,7 +162,7 @@ try:
     late = [item for item in overflow["orders"] if item["order_id"] == "LATE-ONE"][0]
     check(late["seated"] == late["requested"], "溢出的轮椅订单也出票了")
     notices = " ".join(n["message"] for n in late["notices"])
-    check("无障碍专区已满" in notices, f"生成站车协助提示（{notices[:48]}…）")
+    check("轮椅固定停放位已满" in notices, f"生成站车协助提示（{notices[:48]}…）")
     check(
         any(item["order_id"] == "LATE-ONE" for item in overflow["confirmations"]),
         "给出需要用户确认的问题（提示/询问后出票）",

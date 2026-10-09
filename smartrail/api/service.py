@@ -457,7 +457,8 @@ def submit_orders(payload: Mapping[str, Any]) -> dict[str, Any]:
     for index, order in enumerate(orders):
         # 求解前先做情况判定（不预测具体方案，只看结构性事实）
         feasibility = analyse_order(
-            order, engine.formation.seats, engine.state.occupied
+            order, engine.formation.seats, engine.state.occupied,
+            formation=engine.formation,
         )
         if feasibility.severity == "blocking":
             # **只有"全车真的没空座"才跳过求解**。理由：

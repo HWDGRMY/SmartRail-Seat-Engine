@@ -24,7 +24,11 @@ from .router import (
     RoutingSignals,
     Thresholds,
 )
-from .scoring import Scorer, accessible_zone_has_free_seat
+from .scoring import (
+    Scorer,
+    accessible_zone_has_free_seat,
+    wheelchair_bay_slot_ids,
+)
 from .solver import build_context, solve
 
 
@@ -271,7 +275,8 @@ class SeatEngine:
         adjacency = assess_adjacency(placed, ctx, self.config)
         solution.adjacency = adjacency
         solution.notices = build_notices(
-            placed, list(solution.waitlisted), ctx, self.config, adjacency
+            placed, list(solution.waitlisted), ctx, self.config, adjacency,
+            bay_slot_ids=wheelchair_bay_slot_ids(self.formation),
         )
         if adjacency.needs_crew:
             solution.notes.append(

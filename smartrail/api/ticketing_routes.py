@@ -78,7 +78,10 @@ def remove_passenger(payload: dict[str, Any]) -> tuple[int, Any]:
 def list_trains(payload: dict[str, Any]) -> tuple[int, Any]:
     """车次列表：**只有余票数字，没有座位分布图**（用户模式要求）。"""
     store = ticketing.get_dev_store()
-    return 200, {"trains": ticketing.available_trains(store)}
+    return 200, {
+        "trains": ticketing.available_trains(store),
+        "wheelchair_bays": store.wheelchair_bays_summary(),
+    }
 
 
 def seat_rows(payload: dict[str, Any]) -> tuple[int, Any]:
@@ -103,9 +106,11 @@ def evaluate(payload: dict[str, Any]) -> tuple[int, Any]:
     verdict = booking_mod.evaluate_preference(
         store, class_code, max(1, len(profiles)), preference
     )
+    wheelchair = booking_mod.evaluate_wheelchair_bays(store, profiles)
     return 200, {
         "errors": errors,
         "verdict": verdict.to_dict(),
+        "wheelchair": wheelchair.to_dict(),
         "passenger_count": len(profiles),
         "class_code": class_code,
         "preference": preference.to_dict(),

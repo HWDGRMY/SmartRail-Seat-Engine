@@ -26,6 +26,8 @@ from .scoring import (
     UNKNOWN_SEAT,
     WHEELCHAIR_NO_ZONE,
     Scorer,
+    is_wheelchair_seat,
+    wheelchair_bay_slot_ids,
 )
 
 
@@ -88,10 +90,12 @@ def validate_selection(
             )
             continue
         known[pid] = seat_id
-        if passenger.is_mobility_impaired and not seat.in_accessible_zone():
+        if passenger.is_mobility_impaired and not is_wheelchair_seat(
+            seat, wheelchair_bay_slot_ids(state.formation)
+        ):
             blocked.append(
                 Violation(WHEELCHAIR_NO_ZONE, 0, config.t0_wheelchair_no_accessible, (pid,),
-                          f"轮椅乘客 {pid} 必须选择无障碍专区座位（{seat_id} 不是）")
+                          f"轮椅乘客 {pid} 必须选择轮椅固定停放位（{seat_id} 不是）")
             )
         if seat.is_quiet_carriage and passenger.quiet_carriage_blocked:
             blocked.append(
