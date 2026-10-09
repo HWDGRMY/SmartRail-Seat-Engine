@@ -149,12 +149,86 @@ def test_schema_returned() -> None:
           "schema 标明哪些维度不计入总人数")
 
 
+def test_class_code_reaches_the_solver() -> None:
+    """构成组单的**席别必须一路带到 Order**，否则会"买二等座出一等座"。
+
+    真实事故：开发者页选"二等座"提交 2 成人 2 儿童，
+    结果发的是 ``01车01A/C/D/F`` —— **一等座**。
+
+    根因有两层，都在"重建对象时漏字段"：
+      1. ``OrderComposition`` 没有 ``class_code`` 字段（先补上）；
+      2. ``orders_from_design`` 里 ``default_bond`` 覆盖时**重建了 Order**
+         却没带 ``class_code``（与 ``engine._prepare_order`` 漏字段同一类错误）。
+
+    这里同时守住"写在订单上"与"写在请求顶层"两种写法，
+    以及"空席别 = 不限"这条向后兼容语义。
+    """
+    print("[构成接口] 席别是硬约束")
+    from smartrail.ticketing import reset_dev_store as _reset
+
+    expectations = {
+        "二等座": "二等座",
+        "一等座": "一等座",
+        "商务座": "商务座",
+    }
+    for want, expect in expectations.items():
+        _reset()
+        payload = {**comp(adult=2, child=2), "class_code": want}
+        result = service.submit_compositions({"orders": [payload]})
+        order = result["orders"][0]
+        seats = sorted((order.get("seats") or {}).values())
+        check(bool(seats), f"{want}：确实出票了（{len(seats)} 座）")
+        # 座位号首两位是车厢号，用编组反查席别
+        from smartrail.carriage import g25_16_car_formation
+
+        formation = g25_16_car_formation()
+        got = {formation.seat(seat_id).class_code
+               for seat_id in seats if formation.seat(seat_id)}
+        check(got == {expect},
+              f"下单 {want} -> 实际席别 {sorted(got)}（{seats}）")
+
+    # 顶层 class_code 也生效（批量提交接口的写法）
+    _reset()
+    payload = {**comp(adult=1)}
+    result = service.submit_compositions(
+        {"orders": [payload], "class_code": "一等座"})
+    order = result["orders"][0]
+    got = {s[-1] for s in (order.get("seats") or {}).values()}
+    check(bool(got), "顶层席别也出票了")
+    from smartrail.carriage import g25_16_car_formation
+
+    formation = g25_16_car_formation()
+    classes = {formation.seat(seat_id).class_code
+               for seat_id in (order.get("seats") or {}).values()}
+    check(classes == {"一等座"},
+          f"顶层 class_code 生效（{sorted(classes)}）")
+
+    # 空席别 = 不限（压测/仿真场景的向后兼容语义）
+    _reset()
+    payload = {**comp(adult=1), "class_code": ""}
+    result = service.submit_compositions({"orders": [payload]})
+    check(bool(result["orders"][0].get("seats")),
+          "空席别表示不限，仍能出票（未把过滤写成必然失败）")
+
+    # default_bond 覆盖路径不能丢 class_code
+    _reset()
+    result = service.submit_compositions({
+        "orders": [{**comp(adult=2), "class_code": "二等座"}],
+        "same_order_bond": "soft",
+    })
+    classes = {formation.seat(seat_id).class_code
+               for seat_id in (result["orders"][0].get("seats") or {}).values()}
+    check(classes == {"二等座"} or not classes,
+          f"same_order_bond 覆盖后席别仍生效（{sorted(classes)}）")
+
+
 def main() -> int:
     tests = [
         test_blocked_orders_are_not_submitted,
         test_severe_disability_gate,
         test_term_pregnancy_gate,
         test_multi_order_isolation,
+        test_class_code_reaches_the_solver,
         test_schema_returned,
     ]
     if UNDER_PYTEST:

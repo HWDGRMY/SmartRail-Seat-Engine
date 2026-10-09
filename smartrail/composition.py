@@ -181,6 +181,13 @@ class OrderComposition:
     """是否已预约重点旅客服务。"""
     services: list[str] = field(default_factory=list)
     """其它服务项：轮椅、担架、导盲犬、无障碍车厢等。"""
+    class_code: str = ""
+    """**已购席别**（如 ``二等座``）。空字符串表示不限席别。
+
+    这是一个**硬约束**，必须一路带到 :class:`~smartrail.models.Order`；
+    漏传的后果实测过：开发者页选了"二等座"，求解器却按"不限席别"处理，
+    给 2 成人 2 儿童发了一等座 —— 用户报的"买二等座出一等座"。
+    """
 
     # -- 总人数 ----------------------------------------------------------
     @property
@@ -256,6 +263,7 @@ class OrderComposition:
         return {
             "order_id": self.order_id,
             "note": self.note,
+            "class_code": self.class_code,
             "base": dict(self.base),
             "child_sub": dict(self.child_sub),
             "disability": {k: dict(v) for k, v in self.disability.items()},
@@ -271,6 +279,7 @@ class OrderComposition:
         composition = cls(
             order_id=str(payload.get("order_id") or order_id),
             note=str(payload.get("note") or ""),
+            class_code=str(payload.get("class_code") or ""),
         )
         raw_base = payload.get("base") or {}
         for key in BASE_GROUP_IDS:

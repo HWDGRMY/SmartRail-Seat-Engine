@@ -255,6 +255,8 @@ check("/api/composition/submit" in dev_html, "调用真实组单接口")
 check("orderClass" in dev_html, "含席别选择")
 check("baseCounts" in dev_html, "含基础分组计数状态")
 check("baseGroups" in dev_html, "含基础分组步进器")
+check("class_code" in dev_html,
+      "席别会随请求发出（否则界面选了也不生效）")
 
 print()
 print("=== 目标 12c：基础分组与特殊人群的分层 ===")
@@ -320,6 +322,28 @@ if not blocked:
     seats = sorted((order.get("seats") or {}).values())
     check(len(set(seats)) == 10, "10 个座位互不重复")
     print(f"      座位：{seats}")
+
+print()
+print("=== 目标 12e2：席别是硬约束（买二等座不能出一等座）===")
+# 真实事故：开发者页选"二等座"提交，结果发了一等座 01车01A。
+# 根因两层，都是"重建对象时漏字段"：
+#   1. OrderComposition 没有 class_code 字段；
+#   2. orders_from_design 在 default_bond 覆盖时重建 Order 又把它丢了。
+snapshot_for_class = call("/api/dev/snapshot")[1]
+seat_class = {s["seat_id"]: s["class_code"] for s in snapshot_for_class["seats"]}
+for want in ("二等座", "一等座", "商务座"):
+    call("/api/dev/reset", {"passengers": True})
+    composed = _composition(adult=2, child=2)
+    composed["class_code"] = want
+    style, body = call("/api/composition/submit", {"orders": [composed]})
+    order = body["orders"][0]
+    seats = sorted((order.get("seats") or {}).values())
+    got = sorted({seat_class.get(s, "?") for s in seats})
+    check(got == [want], f"下单 {want} -> 实际 {got}（{seats[:2]}…）")
+    # 记录里也要带席别，事后可核对（否则"买二等座"这件事无从查证）
+    recorded = call("/api/dev/snapshot")[1]["orders"]
+    check(bool(recorded) and recorded[-1].get("class_code") == want,
+          f"记录里带席别（{recorded[-1].get('class_code') if recorded else '无'}）")
 
 # 拒票规则仍然生效
 style, guarded = call("/api/composition/submit",

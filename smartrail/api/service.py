@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import time
 from typing import Any, Iterable, Mapping, Sequence
@@ -108,6 +109,13 @@ def order_from_payload(payload: Mapping[str, Any]) -> Order:
         relation=_coerce_enum(RelationType, payload.get("relation", RelationType.SOLO.value)),
         bonds=bonds,
         default_bond=default_bond,
+        # **已购席别必须透传**。漏了它的后果实测过：
+        # 批量提交接口（含开发者页组单）选的"二等座"完全不生效，
+        # 求解器按空席别处理 -> 过滤关闭 -> 给 2 成人 2 儿童发了
+        # 01车的**一等座**。用户报的就是"买二等座出一等座"。
+        #
+        # 空字符串表示"不限席别"（压测/仿真场景），保持向后兼容。
+        class_code=str(payload.get("class_code") or ""),
     )
 
 
@@ -204,6 +212,12 @@ def orders_from_design(payload: Mapping[str, Any]) -> list[Order]:
             relation=relation,
             bonds=bonds,
             default_bond=order_default,
+            # **席别必须透传**（可写在订单上，也可写在请求顶层作为默认值）。
+            # 漏了它，批量提交/开发者组单选的"二等座"完全不生效 ——
+            # 求解器按空席别处理、过滤关闭，实测给 2 成人 2 儿童发了一等座，
+            # 就是用户报的"买二等座出一等座"。
+            class_code=str(raw.get("class_code")
+                           or payload.get("class_code") or ""),
         )
         if default_bond is not None:
             override_value = (
@@ -211,13 +225,10 @@ def orders_from_design(payload: Mapping[str, Any]) -> list[Order]:
                 if str(default_bond).lower() in {"none", "off", "false", "soft"}
                 else _coerce_enum(BondType, default_bond)
             )
-            order = Order(
-                order_id=order.order_id,
-                passengers=order.passengers,
-                relation=order.relation,
-                bonds=order.bonds,
-                default_bond=override_value,
-            )
+            # **重建 Order 不能丢字段**。这里曾经漏掉 class_code，
+            # 于是"请求顶层给了 same_order_bond"的路径下席别被静默重置为空 ——
+            # 与 engine._prepare_order 漏 default_bond / class_code 是同一类错误。
+            order = dataclasses.replace(order, default_bond=override_value)
         orders.append(order)
     return orders
 
@@ -690,12 +701,19 @@ def submit_compositions(payload: Mapping[str, Any]) -> dict[str, Any]:
                             if len(members) == 2
                         ],
                         "bond_mode": "strong",
+                        # 席别必须一路带到 Order —— 否则界面选的"二等座"
+                        # 不生效，会出现"买二等座出一等座"（实测过）。
+                        "class_code": composition.class_code,
                     }
                     for composition, mapping in zip(compositions, mappings)
                     if mapping.check.ok
                 ],
                 "fill": payload.get("fill", 0.0),
                 "seed": payload.get("seed", 7),
+                # 顶层席别作为默认值透传（订单自己给了就以订单为准）。
+                # 漏了这一步，"写在请求顶层"的写法会被静默忽略。
+                "class_code": payload.get("class_code", ""),
+                "same_order_bond": payload.get("same_order_bond"),
             }
         )
         solved = {
@@ -796,6 +814,13 @@ def _record_composition_orders(
     color_of = {
         seat_id: index for seat_id, index in owner.items()
     } if all(isinstance(v, int) for v in owner.values()) else {}
+    # 座位号 -> 席别（用于给记录补上"这一单买的是什么席别"）
+    seat_class: dict[str, str] = {}
+    try:
+        for seat in create_engine().formation.seats:
+            seat_class[seat.seat_id] = seat.class_code
+    except Exception:  # noqa: BLE001 - 取不到就留空，不影响记录本身
+        seat_class = {}
 
     for entry in orders_payload:
         seats = entry.get("seats") or {}
@@ -816,7 +841,9 @@ def _record_composition_orders(
                 "quiet": False,
                 "wheelchair_bay": "",
             })
-        # 车厢/排号从座位号解析（形如「01车01A」），与用户模式保持同构
+        # 车厢/排号从座位号解析（形如「01车01A」），与用户模式保持同构；
+        # 顺带补上席别 —— 记录里没有席别的话，"买二等座"这件事
+        # 在事后无法核对（实测记录里的 class_code 一直是空的）。
         for payload in passengers:
             seat_id = payload["seat_id"]
             if len(seat_id) >= 5 and "车" in seat_id:
@@ -825,13 +852,16 @@ def _record_composition_orders(
                 digits = "".join(ch for ch in tail[:2] if ch.isdigit())
                 payload["row"] = int(digits) if digits else 0
                 payload["col"] = tail[-1] if tail else ""
+            payload["class_code"] = seat_class.get(seat_id, "")
         base_desc = " + ".join(
             f"{key}×{value}" for key, value in base.items() if value
         ) or "无"
         store.record_order({
             "order_id": entry.get("order_id", ""),
             "class_code": entry.get("class_code")
-                          or (entry.get("result") or {}).get("class_code", ""),
+                          or (entry.get("result") or {}).get("class_code", "")
+                          or (next((p["class_code"] for p in passengers
+                                    if p["class_code"]), "")),
             "source": "dev-composition",
             "note": entry.get("note", ""),
             "blocked": bool(entry.get("blocked")),
