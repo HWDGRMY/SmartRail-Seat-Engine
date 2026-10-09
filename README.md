@@ -186,9 +186,9 @@ V2 与 V1 的每一个数字都相同 —— 这不是"两条路线殊途同归"
 
 **2. 奖励必须有硬上限。** 早期版本没有 `max_reward_per_passenger`，导致 Tier 3 的静音车厢奖励按人头累加，**反向利好**"家庭坐静音车厢"这个错误行为。现在每人奖励封顶 60 分，且设有 `min_floor_reward = 10.0` 的碎片化奖励地板。
 
-## 🛡️ 底线承诺（由 150 条断言守护）
+## 🛡️ 底线承诺（由 151 条断言守护）
 
-测试总量：**150 条断言全部通过**（`python tests/pytest_shim.py -q`）。
+测试总量：**151 条断言全部通过**（`python tests/pytest_shim.py -q`）。
 
 | 承诺 | 断言数 | 验证方式 |
 | :--- | ---: | :--- |
@@ -449,7 +449,7 @@ SmartRail-Seat-Engine/
 │       ├── js_lexer.py            # ★ JS 词法扫描（模板串插值 / 正则 / 注释）
 │       ├── bracket_check.py       # 括号与标签配对检查（基于 js_lexer）
 │       └── js_lint.py             # ★ 顶层重复声明检查（防 SyntaxError 让脚本不执行）
-├── tests/                         # 150 条断言（16 个文件）
+├── tests/                         # 151 条断言（16 个文件）
 │   ├── test_safety_guarantees.py  # 底线承诺 + 配置卫生不变量（32）
 │   ├── test_v2_v3.py              # V2/V3：插件层、CP-SAT 建模、仿真器（17）
 │   ├── test_ticketing.py          # ★ 12306 购票流程（18）

@@ -315,6 +315,13 @@ class SolverTables:
             self._unit_cache[key] = out
             return out
         scored: list[tuple[tuple[int, ...], float]] = []
+        # "紧凑"候选：每种 (占用排数, 排号跨度, 车厢) 的代表。
+        #
+        # 为什么要单独留配额：最终有 global_cap 截断，而截断按**个体分**排序 ——
+        # 紧凑组合的个体分往往是 0（普通座位没有奖励），于是它们全部排在
+        # 末尾被截掉。实测余票 156 时全列唯一的整排 `10车09B/C/D/F`
+        # 就是这样进的候选池又被丢掉的，用户看到一家人被撒在三排上。
+        compact: list[tuple[tuple[int, ...], float]] = []
         fallback: list[tuple[tuple[int, ...], float]] = []
         for carriage, slots in self.by_carriage.items():
             combos = self._carriage_combos(unit, carriage)
@@ -352,17 +359,92 @@ class SolverTables:
             # 实测后果：2 成人 + 2 儿童（一个 mandatory 单元）在余票碎片化时
             # **20 单里 19 单被拆到不同排**，用户直接看出"你把大人小孩分开了"。
             #
-            # 修正：先按**占用排数**升序（越少越好），再按个体分降序。
+            # 修正：先按**占用排数**升序（越少越好）、再按**排号跨度**
+            # 升序（跨排时要相邻），最后才按个体分降序。
             # 这样"必须同车厢"的硬约束才有实际可用的候选 —— 约束能不能满足
             # 取决于候选池里有没有对应的组合，而不是取决于罚分多大。
-            est.sort(key=lambda item: (_row_span(self.seats, item[1]), -item[0]))
+            # 按"先紧凑、再高分"排序：这条顺序同时用于**挑选名额**。
+            # 用个体分排序去挑名额是错的 —— 紧凑组合的个体分最低，
+            # 排在最后，正好被 max_per_carriage 截掉（实测余票 156 时
+            # 全列唯一的整排 10车09B/C/D/F 就是这样被丢掉的）。
+            est.sort(key=lambda item: (*_row_key(self.seats, item[1]), -item[0]))
             target = scored if len(slots) >= size else fallback
-            target.extend((combo, value) for value, combo in est[:max_per_carriage])
+            # **每节车厢都要给"最紧凑"的组合留位置。**
+            #
+            # 只取前 max_per_carriage 个（4 人单元仅 4 个）会让池子里
+            # "同排"候选被**排在前面的车厢**占满 —— 01 车有 8 个连续空排，
+            # 前两个就把名额吃光了，别的车厢的整排一个都进不来。
+            # 于是求解器只能在"跨 8 排的散座"里挑，用户看到一家人被撒开。
+            #
+            # 所以按 (row_key, 车厢) 分别保留，保证每节车厢的各种紧凑度
+            # 都有代表。候选池总大小不变（受 global_cap 约束）。
+            per_key: dict[tuple[tuple[int, int], int], int] = {}
+            reserved: list[tuple[float, tuple[int, ...]]] = []
+            filler: list[tuple[float, tuple[int, ...]]] = []
+            for value, combo in est:
+                key = (_row_key(self.seats, combo),
+                       self.seats[combo[0]].carriage)
+                if per_key.get(key, 0) < 2:
+                    per_key[key] = per_key.get(key, 0) + 1
+                    reserved.append((value, combo))
+                else:
+                    filler.append((value, combo))
+            merged = reserved + filler[: max(0, max_per_carriage - len(reserved))]
+            target.extend((combo, value) for value, combo in merged)
+            if target is scored:
+                # 只把**每种紧凑度 × 每节车厢的代表**放进 compact。
+                #
+                # 不能把整个 reserved（可达 23 个/车厢）塞进去：
+                # 每节车厢都塞 23 个的话，compact 里前 24 个全被 01 车占满，
+                # 后面的车厢一个都进不了最终池子 —— 实测"全列唯一整排"
+                # 10车09B/C/D/F 就是这样被挤掉的。
+                com_seen: set[tuple[int, int]] = set()
+                for value, combo in est:
+                    key = (_row_key(self.seats, combo),
+                           self.seats[combo[0]].carriage)
+                    if key in com_seen:
+                        continue
+                    com_seen.add(key)
+                    compact.append((combo, value))
         scored.sort(key=lambda item: -item[1])
+        # compact 按 **紧凑度优先** 排序，而不是按收集顺序。
+        #
+        # 收集时是"逐车厢堆叠"的，同一车厢的条目连在一起：实测 compact 里
+        # (1,0) 落在索引 0 / 84 / 94，而名额只有 24 个 —— 于是只有第一节
+        # 车厢的一整排进得了池子，**全列唯一的整排** `10车09B/C/D/F`
+        # （索引 94）永远被挤掉，用户看到一家人被撒在三排上。
+        # 按 (占用排数, 排号跨度, -个体分) 排序后，所有车厢的最紧凑组合
+        # 都排在前面，名额怎么切都轮得到。
+        compact.sort(key=lambda item: (*_row_key(self.seats, item[0]), -item[1]))
         # 全局上限：大单元（≥5 人）每次评估成本高，池子必须更小，
         # 否则 16 节编组 × 每厢多个候选会让单次决策退化到秒级。
+        #
+        # **配额分配**：先在紧凑候选与高分候选之间五五开，再按分值补齐。
+        # 这样"坐在一起"的方案不会被"个体分更高但把人撒开"的方案挤光 ——
+        # 约束能不能满足取决于候选池里有没有对应组合，而不是罚分多大。
         global_cap = {1: 60, 2: 72, 3: 60, 4: 48}.get(size, 32)
-        out = scored[:global_cap] if scored else fallback[:global_cap]
+        base_pool = scored if scored else []
+        half = max(1, global_cap // 2)
+        chosen: list[tuple[tuple[int, ...], float]] = []
+        seen_combos: set[tuple[int, ...]] = set()
+        for combo, value in compact[:half]:
+            if combo not in seen_combos:
+                seen_combos.add(combo)
+                chosen.append((combo, value))
+        for combo, value in base_pool:
+            if len(chosen) >= global_cap:
+                break
+            if combo not in seen_combos:
+                seen_combos.add(combo)
+                chosen.append((combo, value))
+        # 还有空位就用剩余的紧凑候选补满（大车厢多的场景）
+        for combo, value in compact:
+            if len(chosen) >= global_cap:
+                break
+            if combo not in seen_combos:
+                seen_combos.add(combo)
+                chosen.append((combo, value))
+        out = chosen if chosen else fallback[:global_cap]
         out = self._merge_required_combos(unit, out)
         # 再兜一层：任何出口都必须满足设施硬约束。
         # 不同路径（排内窗口 / size>=5 兜底 / 跨厢）各自过滤容易漏，统一在这里收口。
@@ -981,11 +1063,28 @@ def assign_greedy(
     return solution
 
 
+def _row_key(seats: Sequence[Seat], combo: Sequence[int]) -> tuple[int, int]:
+    """候选的"坐在一起"程度：``(占用排数, 排号跨度)``。
+
+    * **占用排数**越小越好 —— 一排装得下就绝不拆；
+    * 装不下时，**排号跨度**越小越好 —— "05车01排 + 05车02排"（相邻）
+      明显优于"05车01排 + 05车09排"（隔了八排），
+      而成对项只看"人与人是否相邻"，对这两者打分完全一样。
+
+    真实反馈：用户看到 2 成人 + 2 婴儿落到 ``15车7排 / 15车8排 / 15车9排``，
+    说"第四个订单不应该拆开的"。核实：余票 156 时**全列没有任何一排还剩 4 个座**
+    （83 排只剩 1 个座），跨排是物理约束；但"跨到哪几排"完全可以优化。
+    """
+    used = sorted({(seats[slot].carriage, seats[slot].row) for slot in combo})
+    span = (used[-1][1] - used[0][1]) if len(used) > 1 else 0
+    return len(used), span
+
+
 def _by_row_span(
     tables: "SolverTables",
     options: Sequence[tuple[tuple[int, ...], float]],
 ) -> list[tuple[tuple[int, ...], float]]:
-    """把候选按"占排数升序、个体分降序"重排。
+    """把候选按"占排数升序、排号跨度升序、个体分降序"重排。
 
     为什么要单独再排一次：``tables.candidates()`` 已按占排数排过一次，
     但为了控制时延，它在**每节车厢内部**做过截断（``max_per_carriage``），
@@ -997,7 +1096,7 @@ def _by_row_span(
     """
     return sorted(
         options,
-        key=lambda item: (_row_span(tables.seats, item[0]), -item[1]),
+        key=lambda item: (*_row_key(tables.seats, item[0]), -item[1]),
     )
 
 
@@ -1007,7 +1106,7 @@ def _row_span(seats: Sequence[Seat], combo: Sequence[int]) -> int:
     "坐在一起"的度量：同排 1、跨两排 2…… 用它给候选排序，
     保证"尽量少分排"的方案先被评估到。
     """
-    return len({(seats[slot].carriage, seats[slot].row) for slot in combo})
+    return _row_key(seats, combo)[0]
 
 
 def _unit_pair_ceiling(unit: PassengerUnit, ctx: OrderContext, tables: SolverTables) -> float:

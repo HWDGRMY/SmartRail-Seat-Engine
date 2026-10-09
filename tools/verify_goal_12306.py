@@ -523,6 +523,38 @@ check((order.get("wheelchair_bays") or {}).get("needed") == 5,
       f"记录标明需要 5 个停放位（{order.get('wheelchair_bays')}）")
 
 print()
+print("=== 目标 12e7：只要还剩一整排，就不能把它漏掉 ===")
+# 用户看到 2 成人 + 2 婴儿落到三排，说"不应该拆开"。
+# 查下来是候选池配额：全列唯一的整排 10车09B/C/D/F 在 compact 里索引 94，
+# 而进池子名额只有 24 个，名额全被前几节车厢吃掉了 —— 那个整排
+# **从来没被评估过**。另有填充名额时按个体分排序，紧凑组合个体分是 0，
+# 排在最后被 max_per_carriage 截掉。
+call("/api/dev/reset", {"passengers": True})
+call("/api/dev/remaining", {"class_code": "二等座", "remaining": 156})
+snap_cls = call("/api/dev/snapshot")[1]
+seat_class_by_id = {s["seat_id"]: s["class_code"] for s in snap_cls["seats"]}
+occupied_now = {s["seat_id"] for s in snap_cls["seats"] if s.get("occupied")}
+buckets: dict[tuple[int, int], list[str]] = {}
+for seat in snap_cls["seats"]:
+    if seat["class_code"] != "二等座" or seat["seat_id"] in occupied_now:
+        continue
+    buckets.setdefault((seat["carriage"], seat["row"]), []).append(seat["seat_id"])
+whole = sorted(row for row, seats_ in buckets.items() if len(seats_) >= 4)
+check(len(whole) == 1, f"该状态下全列恰有 1 个整排（{whole}）")
+
+four = _composition(adult=2, child=0)
+four["base"]["infant"] = 2
+four["class_code"] = "二等座"
+style, body = call("/api/composition/submit", {"orders": [four]})
+got = sorted((body["orders"][0].get("seats") or {}).values())
+got_rows = {s[:2] + "车" + s[3:5] for s in got}
+check(len(got_rows) == 1,
+      f"有整排时 4 人坐同一排（实际 {len(got_rows)} 排：{got}）")
+car, row = whole[0]
+check(all(s.startswith(f"{car:02d}车{row:02d}") for s in got),
+      f"用的就是那个整排（{car}车{row}排）")
+
+print()
 print("=== 目标 12f：开发者提交的订单必须被保留 ===")
 # 需求："开发者提交的订单难道不用保留吗" —— 原先这条路径完全没记录。
 call("/api/dev/reset", {"passengers": True})

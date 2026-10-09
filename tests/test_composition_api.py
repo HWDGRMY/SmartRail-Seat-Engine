@@ -540,6 +540,92 @@ def _service_levels():
     return composition_schema()["disability_levels"]
 
 
+def test_whole_row_is_never_missed() -> None:
+    """只要全列还剩**一整排**能坐下这一单，就必须用上它。
+
+    真实反馈：用户看到 2 成人 + 2 婴儿落到 ``15车7排 / 15车8排 / 15车9排``，
+    说"第四个订单不应该拆开的"。查下来是**候选池的配额分配**出了问题：
+
+    * `_unit_candidates` 按"逐车厢堆叠"收集紧凑候选，同一车厢的条目连在一起。
+      实测余票 156 时全列唯一的整排是 ``10车09B/C/D/F``，它在 compact 里的
+      **索引是 94**，而进最终池子的名额只有 24 个（global_cap//2）——
+      名额全被前几节车厢吃掉了，那个整排**从来没被评估过**；
+    * 另外填充每车厢名额时用的是**按个体分排序**的列表，紧凑组合个体分是 0，
+      排在最后，正好被 `max_per_carriage` 截掉。
+
+    修正：compact 按 (占用排数, 排号跨度, -个体分) 排序（紧凑度优先），
+    并按 (row_key, 车厢) 去重保留代表。这样"坐在一起"的方案一定进得了池子 ——
+    候选池决定"能不能选"，代价只决定"选哪个"。
+    """
+    print("[构成接口] 整排不能漏选")
+    from smartrail.ticketing import get_dev_store as _store
+    from smartrail.ticketing import reset_dev_store as _reset
+
+    payload = {**comp(adult=2, child=0), "class_code": "二等座"}
+    # 2 成人 + 2 婴儿
+    payload["base"]["infant"] = 2
+    payload["base"]["child"] = 0
+
+    _reset()
+    store = _store()
+    store.set_remaining("二等座", 156)
+
+    def whole_rows() -> list[str]:
+        buckets: dict[tuple[int, int], list[str]] = {}
+        for seat in store.formation.seats:
+            if seat.class_code != "二等座" or store.is_occupied(seat.seat_id):
+                continue
+            buckets.setdefault((seat.carriage, seat.row), []).append(seat.seat_id)
+        return sorted(row for row, seats in buckets.items() if len(seats) >= 4)
+
+    available = whole_rows()
+    check(len(available) == 1,
+          f"该状态下全列恰有 1 个整排（{available}）")
+
+    result = service.submit_compositions({"orders": [payload]})
+    order = result["orders"][0]
+    seats = sorted((order.get("seats") or {}).values())
+    rows = {s[:2] + "车" + s[3:5] for s in seats}
+    check(len(rows) == 1,
+          f"有整排时 4 人坐同一排（实际占 {len(rows)} 排：{seats}）")
+    target_car, target_row = available[0]
+    check(all(s.startswith(f"{target_car:02d}车{target_row:02d}")
+              for s in seats),
+          f"用的就是那个整排（{target_car}车{target_row}排）")
+
+    # 整排用掉之后，后续订单只能跨排。这里只守**能守的那条**：
+    # 跨排数不能超过"理论最小值"——即任一车厢里，最少几排能装下 4 人。
+    # 排号是否相邻做不到时无法强求（实测 06 车只有 1 排和 4 排有空位，
+    # 中间两排是满的）。
+    result = service.submit_compositions({"orders": [dict(payload)]})
+    seats = sorted((result["orders"][0].get("seats") or {}).values())
+    used_rows = sorted({(s[:2], int(s[3:5])) for s in seats})
+    free_per_row: dict[tuple[str, int], int] = {}
+    for seat in store.formation.seats:
+        if seat.class_code != "二等座" or store.is_occupied(seat.seat_id):
+            continue
+        key = (f"{seat.carriage:02d}车", seat.row)
+        free_per_row[key] = free_per_row.get(key, 0) + 1
+    # 每个车厢：把该车厢各行空位数从多到少累加，看几排能凑够 4 个
+    theoretical = None
+    for carriage in {key[0] for key in free_per_row}:
+        counts = sorted(
+            (n for (c, _r), n in free_per_row.items() if c == carriage),
+            reverse=True,
+        )
+        total = 0
+        for index, count in enumerate(counts, start=1):
+            total += count
+            if total >= 4:
+                theoretical = index if theoretical is None else min(theoretical, index)
+                break
+    check(theoretical is not None,
+          f"能算出理论最少排数（实际占 {len(used_rows)} 排：{seats}）")
+    check(len(used_rows) <= theoretical,
+          f"跨排数不超过理论最少排数"
+          f"（实际 {len(used_rows)} vs 理论 {theoretical}）")
+
+
 def main() -> int:
     tests = [
         test_blocked_orders_are_not_submitted,
@@ -551,6 +637,7 @@ def main() -> int:
         test_same_order_sits_in_one_row_when_possible,
         test_key_service_and_companion_rules,
         test_wheelchair_is_a_category_not_a_severity,
+        test_whole_row_is_never_missed,
         test_schema_returned,
     ]
     if UNDER_PYTEST:

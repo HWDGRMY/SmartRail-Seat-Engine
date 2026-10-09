@@ -1047,6 +1047,40 @@ def _record_composition_orders(
         base_desc = " + ".join(
             f"{key}×{value}" for key, value in base.items() if value
         ) or "无"
+        rows = sorted({
+            f"{p['carriage']:02d}车{p['row']}排"
+            for p in passengers if p["carriage"]
+        })
+        # **拆没拆、为什么拆，都要说清楚。**
+        #
+        # 用户看到 2 成人 + 2 婴儿落到三排，第一反应是"不应该拆开"。
+        # 核实过：余票 156 时全列**没有任何一排还剩 4 个座**
+        # （83 排只剩 1 个座），跨排是物理约束 —— 但界面上一直没说，
+        # 于是看起来像算法乱拆。这里把"是否拆分 + 当时的余票能否凑出整排"
+        # 一起记下来，让用户能自己核对。
+        split = len(rows) > 1
+        split_reason = ""
+        if split and entry.get("seats"):
+            unit_size = len(entry["seats"])
+            free_by_row: dict[tuple[int, int], int] = {}
+            for seat in store.formation.seats:
+                if seat.class_code != (entry.get("class_code") or "二等座"):
+                    continue
+                if store.is_occupied(seat.seat_id) or seat.seat_id in seats.values():
+                    continue
+                key = (seat.carriage, seat.row)
+                free_by_row[key] = free_by_row.get(key, 0) + 1
+            whole_rows = sum(1 for n in free_by_row.values() if n >= unit_size)
+            if whole_rows == 0:
+                split_reason = (
+                    f"座位分在 {len(rows)} 排：出票时该席别已无一排可容纳 "
+                    f"{unit_size} 人（最长的空排也放不下），只能就近拆分。"
+                )
+            else:
+                split_reason = (
+                    f"座位分在 {len(rows)} 排：出票时还有 {whole_rows} 排可容纳 "
+                    f"{unit_size} 人，未采用（其余约束或评分更优）。"
+                )
         store.record_order({
             "order_id": entry.get("order_id", ""),
             "class_code": entry.get("class_code")
@@ -1064,13 +1098,11 @@ def _record_composition_orders(
             "required_companions": (entry.get("check") or {}).get(
                 "required_companions"),
             "reason": "；".join((entry.get("check") or {}).get("errors") or []),
+            "split_reason": split_reason,
             "passengers": passengers,
-            "rows": sorted({
-                f"{p['carriage']:02d}车{p['row']}排"
-                for p in passengers if p["carriage"]
-            }),
+            "rows": rows,
             "seated": len(seats),
-            "split": False,
+            "split": split,
             "color_index": entry.get("color_index", 0),
         })
 

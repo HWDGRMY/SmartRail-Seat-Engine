@@ -87,9 +87,8 @@
   .seat{width:25px;height:21px;border-radius:3px;border:1px solid #cfd6de;background:#fff;
     flex:0 0 auto;font-size:9px;display:flex;align-items:center;justify-content:center;
     color:#98a2ae;position:relative;cursor:default}
-  .seat.sold{background:#9fb2c6;border-color:#8ea3ba;color:#fff}
-  .seat.manual{background:#d9c7a8;border-color:#c8b394;color:#6b5a3d}
   .seat.preset{background:#c9d4e0;border-color:#b7c4d3;color:#5a6a7c}
+  /* 订单配色见下方 .seat.orderc —— 已售座位按订单号取色 */
   .seat.quiet{outline:2px solid var(--quiet);outline-offset:-2px}
   .seat.access{box-shadow:inset 0 -3px 0 var(--access)}
   .seat.bayslot{background:#e6f7f7;border-color:var(--access);color:#0f7d7d;
@@ -228,6 +227,7 @@
         <span><i style="border:2px solid var(--quiet)"></i>静音车厢</span>
         <span><i style="background:#e6f7f7;border-color:var(--access)"></i>近轮椅位</span>
       </div>
+      <div class="legend-order" id="orderLegend"></div>
       <div class="hint" id="baySummary" style="margin-bottom:6px"></div>
       <div id="bayList" style="margin-bottom:10px"></div>
       <div id="carriages"><div class="hint">加载中…</div></div>
@@ -363,11 +363,25 @@ const esc = (s) => String(s == null ? "" : s)
 let snapshot = null;
 let pendingTimers = {};
 
+/** 座位样式类。**同一订单一个颜色**（需求："不同订单用不同颜色在座位图上标注"）。
+ *
+ * 原先只按"来源"上色（sold 全是同一种灰），座位图上看不出哪几个座属于同一单，
+ * 也就无法直观核对"这一单是不是坐在一起"。
+ */
 function seatClass(seat) {
   if (!seat.occupied) return seat.bay_slot ? "bayslot" : "";
-  if (seat.source === "sold") return "sold";
   if (seat.source === "manual") return "manual";
-  return "preset";
+  if (seat.source === "preset") return "preset";
+  return "orderc";   // 用户已售 / 开发者组单 -> 按订单取色
+}
+
+/** 订单 -> 调色板索引，保证同一订单在座位图与记录里颜色一致。 */
+function orderColorIndex(orderId, fallback) {
+  if (!orderId) return (fallback || 0) % ORDER_PALETTE.length;
+  if (!(orderId in orderColorMap)) {
+    orderColorMap[orderId] = orderColorSeq++;
+  }
+  return orderColorMap[orderId] % ORDER_PALETTE.length;
 }
 
 function renderMetrics() {
@@ -411,14 +425,25 @@ function renderCarriages() {
         const cls = ["seat", seatClass(seat)];
         if (seat.quiet) cls.push("quiet");
         if (seat.accessible) cls.push("access");
+        if (seat.wheelchair_bay) cls.push("bay");
+        // 同一订单一个颜色；颜色由订单号决定，与「下单记录」里的色块一致
+        let style = "";
+        if (cls.includes("orderc")) {
+          const palette = ORDER_PALETTE[
+            orderColorIndex(seat.order_id, seat.color_index)];
+          style = ` style="--oc-bg:${palette.bg};--oc-bd:${palette.bd};`
+            + `--oc-fg:${palette.fg}"`;
+        }
         const title = [
           seat.seat_id, seat.class_code,
+          seat.wheelchair_bay
+            ? `★ 轮椅固定停放位（独立编号，不占座位票额）` : "",
           seat.bay_slot ? "★ 紧邻轮椅固定停放位（该座位仍为普通座位，可正常发售）" : "",
           seat.occupied ? `已占用（${seat.source}${seat.order_id ? " " + seat.order_id : ""}${
             seat.passenger_name ? " " + seat.passenger_name : ""}）` : "可选",
           seat.quiet ? "静音车厢" : "",
         ].filter(Boolean).join(" · ");
-        return `<span class="${cls.join(" ")}" data-seat="${esc(seat.seat_id)}"
+        return `<span class="${cls.join(" ")}"${style} data-seat="${esc(seat.seat_id)}"
           title="${esc(title)}">${esc(seat.col)}</span>`;
       }).join("");
       return `<div class="srow"><span class="rno">${row}</span>${cells}</div>`;
@@ -429,8 +454,7 @@ function renderCarriages() {
     if (car.wheelchair_bays) {
       printed.push(`<span class="tag" style="background:#e6f7f7;border-color:#a9dede;
         color:#0f7d7d">轮椅停放位 ${car.wheelchair_bays}</span>`);
-    }
-    return `<div class="car">
+    }    return `<div class="car">
       <div class="car-head">
         <b>${String(car.number).padStart(2, "0")}车</b>
         <span class="carspec" title="${esc(car.class_summary || car.class_code)}
@@ -442,9 +466,31 @@ function renderCarriages() {
       <div class="car-body"><div class="seatgrid">${grid}</div></div>
     </div>`;
   }).join("");
+  renderOrderLegend();
   $("carriages").querySelectorAll(".seat[data-seat]").forEach((node) => {
     node.onclick = () => toggleSeat(node.dataset.seat);
   });
+}
+
+/** 座位图上"哪个颜色是哪个订单"的图例。 */
+function renderOrderLegend() {
+  const box = $("orderLegend");
+  if (!box) return;
+  const orders = (snapshot.orders || []).filter((o) => !o.blocked);
+  // 让新订单优先拿到颜色（先出现的订单先分配，保证颜色稳定）
+  orders.slice().reverse().forEach((o) => orderColorIndex(o.order_id));
+  if (!orders.length) {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = `<span class="lg">订单着色</span>` + orders.map((o) => {
+    const palette = ORDER_PALETTE[orderColorIndex(o.order_id)];
+    const seats = (o.passengers || []).filter((p) => p.seat_id).length;
+    return `<span class="lg" data-testid="legend-${esc(o.order_id)}">
+      <span class="sw" style="background:${palette.bg};
+        border-color:${palette.bd}"></span>
+      ${esc(o.order_id)}（${seats} 座）</span>`;
+  }).join("");
 }
 
 function renderSliders() {
@@ -549,6 +595,9 @@ function renderOrders() {
         : ""}
       ${o.rows && o.rows.length
         ? `<div class="hint">排布：${esc(o.rows.join("、"))}</div>` : ""}
+      ${o.split_reason
+        ? `<div class="hint" style="color:#8a6a2a">${esc(o.split_reason)}</div>`
+        : ""}
       <div class="orderseats">${seats}</div>
     </div>`;
   }).join("")}</div>`;
@@ -568,6 +617,23 @@ let pregnantCounts = {};   // {"term|adult": 1, ...}
 let childSubCounts = {};   // {child_quiet: 1, ...}
 let wheelchairCount = 0;   // 其中使用轮椅的人数（**类别**维度，不是程度）
 let wheelchairsFree = null; // 台账里空余的固定停放位数
+
+// 订单配色：同一订单一个颜色（座位图上按订单着色，便于核对"是否坐在一起"）
+// 用色相拉开的方式，保证相邻订单颜色好区分，且文字对比度足够。
+const ORDER_PALETTE = [
+  { bg: "#a8c4e8", bd: "#7fa4d4", fg: "#123a6b" },
+  { bg: "#f2c9a0", bd: "#dda86f", fg: "#6b3d10" },
+  { bg: "#a9d9b8", bd: "#7cbf90", fg: "#0f4a24" },
+  { bg: "#e3b6d6", bd: "#c98bb8", fg: "#5d1f4c" },
+  { bg: "#c9c2ea", bd: "#a49ad6", fg: "#2f2266" },
+  { bg: "#f0d79a", bd: "#d9b862", fg: "#5c4410" },
+  { bg: "#a5d6d6", bd: "#76bcbc", fg: "#0d4444" },
+  { bg: "#eab8b3", bd: "#d08b84", fg: "#6b2119" },
+  { bg: "#bcd3a4", bd: "#93b374", fg: "#2f4413" },
+  { bg: "#d9c3a5", bd: "#bfa077", fg: "#4f3a1c" },
+];
+let orderColorMap = {};
+let orderColorSeq = 0;
 
 async function loadCompositionSchema() {
   const schema = await api("/api/composition/schema");
