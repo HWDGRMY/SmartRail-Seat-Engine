@@ -36,8 +36,9 @@
   .btn.danger:hover{background:#cf443e}
   .btn.small{padding:4px 10px;font-size:12px}
   .hint{color:var(--muted);font-size:12.5px}
-  .grid2{display:grid;grid-template-columns:1fr 380px;gap:14px;align-items:start}
-  @media (max-width:1200px){.grid2{grid-template-columns:1fr}}
+  .grid2{display:grid;grid-template-columns:minmax(0,1fr) 440px;gap:14px;
+    align-items:start}
+  @media (max-width:1400px){.grid2{grid-template-columns:1fr}}
   .metrics{display:flex;flex-wrap:wrap;gap:22px}
   .metric .k{font-size:11.5px;color:var(--muted)}
   .metric .v{font-size:21px;font-weight:700;font-variant-numeric:tabular-nums}
@@ -84,24 +85,45 @@
     border-bottom:1px dashed var(--line)}
   .paxline .nm{flex:1}
   /* 提交订单面板里的乘车人勾选行 */
-  /* ---- 组单步进器 ---- */
+  /* ---- 组单步进器 ----
+     布局要求：标签**不换行**（早期 .sname 用了 flex-direction:column
+     且没有 min-width:0，长标签被压成"轻/度/残/疾"竖着一列，非常难看）。 */
   .grouptitle{display:flex;align-items:center;gap:8px;font-size:12.5px;
     font-weight:600;color:#3b4a5a;margin:2px 0 6px}
-  .steppers{display:flex;flex-direction:column;gap:5px}
-  .stepper{display:flex;align-items:center;gap:8px;font-size:12.5px;
-    padding:3px 0;border-bottom:1px dashed var(--line)}
-  .stepper .sname{flex:1;display:flex;flex-direction:column;line-height:1.35}
-  .stepper .sname .hint{font-size:11px}
-  .stepper .sctl{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-  .stepper .sval{min-width:22px;text-align:center;font-weight:700;
-    font-variant-numeric:tabular-nums}
-  .bandcell{display:inline-flex;align-items:center;gap:3px}
-  .bandcell .bandname{font-size:10.5px;color:var(--muted);margin-right:2px}
+  .steppers{display:flex;flex-direction:column;gap:2px}
+  .stepper{display:grid;grid-template-columns:minmax(0,1fr) auto;
+    align-items:center;gap:10px;padding:5px 0;
+    border-bottom:1px dashed var(--line)}
+  .stepper .sname{min-width:0}
+  .stepper .sname b{font-size:12.5px;font-weight:600;display:block;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .stepper .sname .hint{font-size:11px;display:block;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
+  .stepper .sctl{display:flex;align-items:center;gap:6px;flex-wrap:nowrap}
+  .stepper .sval{min-width:20px;text-align:center;font-weight:700;
+    font-size:13px;font-variant-numeric:tabular-nums}
+  /* 年龄段的加减控件：窄而整齐，排成一行 */
+  .bandcell{display:inline-flex;align-items:center;gap:2px;
+    padding:1px 4px;border-radius:4px;background:#fafbfd}
+  .bandcell .bandname{font-size:10.5px;color:var(--muted);margin-right:4px;
+    white-space:nowrap}
+  .bandcell .btn{padding:1px 6px;font-size:11px;line-height:1.4}
+  .bandcell .sval{min-width:16px;text-align:center;font-size:12px;
+    font-weight:700;font-variant-numeric:tabular-nums}
   .specialbox{display:none}
   .specialbox.on{display:block}
   .ssection{padding:8px 0 4px;border-top:1px dashed var(--line)}
   .ssection .stitle{font-size:12px;font-weight:600;color:#4a5a6a;
     margin-bottom:5px;display:flex;gap:8px;align-items:baseline}
+  /* 特殊人群每行：名称 + 说明一行，年龄段换到第二行，不再挤成一列 */
+  .stepper.wide{grid-template-columns:1fr;gap:4px}
+  /* 提交结果里的乘客行 */
+  .paxrow{display:flex;align-items:center;gap:8px;font-size:12.5px;
+    padding:3px 0;border-bottom:1px dashed var(--line)}
+  .paxrow .pname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap}
+  .paxrow .ptag{display:inline-block;padding:1px 7px;border-radius:4px;
+    font-size:11px;background:#eef4fd;color:var(--blue-d);border:1px solid #d8e7fa}
   .tag{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11px;
     background:#eef4fd;color:var(--blue-d);border:1px solid #d8e7fa}
   .tag.q{background:#f3f0fd;color:var(--quiet);border-color:#e2ddfa}
@@ -476,12 +498,13 @@ function updateTotalHint() {
     + (extra ? `（其中 ${extra} 位标注了特殊人群，不计入总人数）` : "");
 }
 
-function stepper(label, desc, value, onChange, testid) {
+function stepper(label, desc, value, onChange, testid, extraClass = "") {
   const row = document.createElement("div");
-  row.className = "stepper";
+  row.className = `stepper ${extraClass}`.trim();
   row.setAttribute("data-testid", testid);
   row.innerHTML = `
-    <span class="sname">${esc(label)}<span class="hint">${esc(desc)}</span></span>
+    <span class="sname"><b>${esc(label)}</b>
+      <span class="hint">${esc(desc)}</span></span>
     <span class="sctl">
       <button class="btn ghost small" data-delta="-1"
         ${value <= 0 ? "disabled" : ""}>−</button>
@@ -491,6 +514,40 @@ function stepper(label, desc, value, onChange, testid) {
     </span>`;
   row.querySelectorAll("button[data-delta]").forEach((button) => {
     button.onclick = () => onChange(Number(button.dataset.delta));
+  });
+  return row;
+}
+
+/** 特殊人群的行：标题一行、年龄段控件一行（避免挤成一竖列）。 */
+function bandRow(title, hint, levelId, counts, setter, prefix) {
+  const row = document.createElement("div");
+  row.className = "stepper wide";
+  row.setAttribute("data-testid", `${prefix}-${levelId}`);
+  row.innerHTML = `<span class="sname"><b>${esc(title)}</b>
+    <span class="hint">${esc(hint)}</span></span>
+    <span class="sctl"></span>`;
+  const ctl = row.querySelector(".sctl");
+  (compositionSchema.age_bands || []).forEach((band) => {
+    const key = `${levelId}|${band.id}`;
+    const value = counts[key] || 0;
+    const cell = document.createElement("span");
+    cell.className = "bandcell";
+    cell.setAttribute("data-testid", `${prefix}-${levelId}-${band.id}`);
+    cell.innerHTML = `<span class="bandname">${esc(band.label)}</span>
+      <button class="btn ghost small" data-delta="-1"
+        ${value <= 0 ? "disabled" : ""}>−</button>
+      <span class="sval">${value}</span>
+      <button class="btn ghost small" data-delta="1"
+        ${value >= 99 ? "disabled" : ""}>+</button>`;
+    cell.querySelectorAll("button[data-delta]").forEach((button) => {
+      button.onclick = () => {
+        setter(key, Math.max(0, Math.min(99, (counts[key] || 0)
+          + Number(button.dataset.delta))));
+        renderSpecialBox();
+        updateTotalHint();
+      };
+    });
+    ctl.appendChild(cell);
   });
   return row;
 }
@@ -505,12 +562,29 @@ function renderBaseGroups() {
       (delta) => {
         baseCounts[group.id] = Math.max(
           0, Math.min(99, (baseCounts[group.id] || 0) + delta));
+        // 基础分组减小后，叠加维度可能超过它 —— 一并收回来，
+        // 否则会得到"儿童细分 2 人 > 儿童 1 人"这种被后端拦下的状态。
+        clampChildSub();
         renderBaseGroups();
+        renderSpecialBox();
         updateTotalHint();
       },
       `base-${group.id}`,
     ));
   });
+}
+
+function clampChildSub() {
+  if (!compositionSchema) return;
+  const cap = baseCounts.child || 0;
+  let tagged = (compositionSchema.child_sub_groups || [])
+    .reduce((sum, g) => sum + (childSubCounts[g.id] || 0), 0);
+  for (const group of compositionSchema.child_sub_groups || []) {
+    if (tagged <= cap) break;
+    const drop = Math.min(childSubCounts[group.id] || 0, tagged - cap);
+    childSubCounts[group.id] = (childSubCounts[group.id] || 0) - drop;
+    tagged -= drop;
+  }
 }
 
 function section(title, hint, rows) {
@@ -526,10 +600,10 @@ function renderSpecialBox() {
   const box = $("specialBox");
   if (!box || !compositionSchema) return;
   box.innerHTML = "";
-  const bands = compositionSchema.age_bands || [];
 
-  // 儿童细分：安静 / 吵闹（基础分组"儿童"之上的维度）
-  box.appendChild(section("儿童细分", "叠加在「儿童」之上，不改变总人数",
+  // 儿童细分：安静 / 吵闹（叠加在"儿童"之上，不计入总人数）
+  box.appendChild(section("儿童细分",
+    "叠加在「儿童」之上，必须先给基础分组加儿童人数", 
     (compositionSchema.child_sub_groups || []).map((group) => stepper(
       group.label, "儿童 4-14 岁", childSubCounts[group.id] || 0,
       (delta) => {
@@ -541,81 +615,27 @@ function renderSpecialBox() {
     ))));
 
   // 残疾：程度 × 年龄段
-  box.appendChild(section("残疾旅客", "程度 × 年龄段，按年龄段叠加到基础分组",
-    (compositionSchema.disability_levels || []).map((level) => {
-      const row = document.createElement("div");
-      row.className = "stepper";
-      row.setAttribute("data-testid", `disability-${level.id}`);
-      const tags = level.requires_key_service ? "需重点旅客服务" : "无需重点服务";
-      const companion = level.requires_companion ? " · 需陪同" : "";
-      row.innerHTML = `<span class="sname">${esc(level.label)}残疾
-        <span class="hint">${esc(tags + companion)}</span></span>
-        <span class="sctl"></span>`;
-      const ctl = row.querySelector(".sctl");
-      bands.forEach((band) => {
-        const key = `${level.id}|${band.id}`;
-        const cell = document.createElement("span");
-        cell.className = "bandcell";
-        cell.setAttribute("data-testid", `disability-${level.id}-${band.id}`);
-        const value = disabilityCounts[key] || 0;
-        cell.innerHTML = `<span class="bandname">${esc(band.label)}</span>
-          <button class="btn ghost small" data-delta="-1"
-            ${value <= 0 ? "disabled" : ""}>−</button>
-          <span class="sval">${value}</span>
-          <button class="btn ghost small" data-delta="1"
-            ${value >= 99 ? "disabled" : ""}>+</button>`;
-        cell.querySelectorAll("button[data-delta]").forEach((button) => {
-          button.onclick = () => {
-            disabilityCounts[key] = Math.max(
-              0, Math.min(99, (disabilityCounts[key] || 0)
-                + Number(button.dataset.delta)));
-            renderSpecialBox();
-            updateTotalHint();
-          };
-        });
-        ctl.appendChild(cell);
-      });
-      return row;
-    })));
+  box.appendChild(section("残疾旅客", "程度 × 年龄段，叠加到对应年龄段的基础分组",
+    (compositionSchema.disability_levels || []).map((level) => bandRow(
+      `${level.label}残疾`,
+      (level.requires_key_service ? "需重点旅客服务" : "无需重点服务")
+        + (level.requires_companion ? " · 需陪同" : ""),
+      level.id, disabilityCounts,
+      (key, value) => { disabilityCounts[key] = value; },
+      "disability",
+    ))));
 
   // 孕妇：孕期 × 年龄段
-  box.appendChild(section("孕妇", "孕期 × 年龄段，按年龄段叠加到基础分组",
-    (compositionSchema.pregnant_stages || []).map((stage) => {
-      const row = document.createElement("div");
-      row.className = "stepper";
-      row.setAttribute("data-testid", `pregnant-${stage.id}`);
-      const tags = stage.requires_key_service ? "需重点旅客服务" : "无需重点服务";
-      const companion = stage.requires_companion ? " · 需陪同" : "";
-      const configurable = stage.configurable ? " · 平台可配置" : "";
-      row.innerHTML = `<span class="sname">孕${esc(stage.label)}
-        <span class="hint">${esc(tags + companion + configurable)}</span></span>
-        <span class="sctl"></span>`;
-      const ctl = row.querySelector(".sctl");
-      bands.forEach((band) => {
-        const key = `${stage.id}|${band.id}`;
-        const cell = document.createElement("span");
-        cell.className = "bandcell";
-        cell.setAttribute("data-testid", `pregnant-${stage.id}-${band.id}`);
-        const value = pregnantCounts[key] || 0;
-        cell.innerHTML = `<span class="bandname">${esc(band.label)}</span>
-          <button class="btn ghost small" data-delta="-1"
-            ${value <= 0 ? "disabled" : ""}>−</button>
-          <span class="sval">${value}</span>
-          <button class="btn ghost small" data-delta="1"
-            ${value >= 99 ? "disabled" : ""}>+</button>`;
-        cell.querySelectorAll("button[data-delta]").forEach((button) => {
-          button.onclick = () => {
-            pregnantCounts[key] = Math.max(
-              0, Math.min(99, (pregnantCounts[key] || 0)
-                + Number(button.dataset.delta)));
-            renderSpecialBox();
-            updateTotalHint();
-          };
-        });
-        ctl.appendChild(cell);
-      });
-      return row;
-    })));
+  box.appendChild(section("孕妇", "孕期 × 年龄段，叠加到对应年龄段的基础分组",
+    (compositionSchema.pregnant_stages || []).map((stage) => bandRow(
+      `孕${stage.label}`,
+      (stage.requires_key_service ? "需重点旅客服务" : "无需重点服务")
+        + (stage.requires_companion ? " · 需陪同" : "")
+        + (stage.configurable ? " · 平台可配置" : ""),
+      stage.id, pregnantCounts,
+      (key, value) => { pregnantCounts[key] = value; },
+      "pregnant",
+    ))));
 }
 
 function buildComposition() {
@@ -664,14 +684,19 @@ async function submitOrder() {
     const check = order.check || {};
     const blocked = (body.blocked || [])[0];
     if (blocked) {
-      box.innerHTML = `<div class="hint" style="color:var(--bad)">
-        被拦下（未进入求解器）：${esc((blocked.check.errors || []).join("；"))}</div>`;
+      // blocked 的形状是 {order_id, note, errors, total_passengers} ——
+      // errors 在**顶层**，不在 check 里。早期写成 blocked.check.errors，
+      // 于是"未加人数就点提交"会抛 "Cannot read properties of undefined"，
+      // 用户看到的是一个内部报错而不是"总人数为 0"这句人话。
+      const reasons = blocked.errors || (blocked.check || {}).errors || [];
+      box.innerHTML = `<div class="notice bad" style="margin:0">
+        被拦下（未进入求解器）：${esc(reasons.join("；") || "未知原因")}</div>`;
       return;
     }
     const info = order.info || {};
     const seats = Object.entries(order.seats || {}).map(([pid, seat]) =>
-      `<div class="paxline"><span class="nm">${esc(pid)}</span>
-        <span class="tag">${esc(seat)}</span></div>`).join("");
+      `<div class="paxrow"><span class="pname">${esc(pid)}</span>
+        <span class="ptag">${esc(seat)}</span></div>`).join("");
     box.innerHTML = `
       <div class="hint" style="margin-bottom:6px">
         订单 ${esc(order.order_id || "")} ·
