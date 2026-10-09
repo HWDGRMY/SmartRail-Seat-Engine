@@ -126,15 +126,6 @@ def ticket_first() -> HTMLResponse:
     return HTMLResponse(page.read_text(encoding="utf-8"))
 
 
-@app.get("/booking", response_class=HTMLResponse, include_in_schema=False)
-def booking() -> HTMLResponse:
-    """交互式选座页（12306 风格）：用户自己填乘客、自己点座位、自己提交。"""
-    page = STATIC_DIR / "booking.html"
-    if not page.exists():
-        return HTMLResponse("<h1>页面缺失</h1><p>缺少 smartrail/web/booking.html</p>")
-    return HTMLResponse(page.read_text(encoding="utf-8"))
-
-
 @app.get("/api/scenario/passengers/{name}")
 def get_scenario_passengers(name: str) -> dict[str, Any]:
     """把预置场景导出为可直接填表的数据（前端不重复维护乘客定义）。"""

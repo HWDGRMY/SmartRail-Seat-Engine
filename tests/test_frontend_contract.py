@@ -114,13 +114,25 @@ def test_api_paths_match_backend_routes() -> None:
         check("出票优先" in tf_html, "出票优先页含策略说明")
         check('id="tf-data"' in tf_html, "出票优先页内嵌真实场景数据（离线可用）")
         check("__TF_SNAPSHOT__" not in tf_html, "出票优先页数据已注入（占位符已替换）")
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/booking", timeout=30) as response:
-            booking_html = response.read().decode("utf-8")
+        # /booking 批量提交页面已按需求删除，下单能力移到 /dev。
+        # 这里检查它**确实不可访问**（而不是"忘了删路由"）。
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/booking", timeout=30
+            ) as response:
+                gone_status = response.status
+        except urllib.error.HTTPError as error:
+            gone_status = error.code
+        check(gone_status == 404,
+              f"GET /booking 已下线（HTTP {gone_status}）")
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/dev", timeout=30) as response:
+            dev_html = response.read().decode("utf-8")
         check(
-            response.status == 200 and "提交订单" in booking_html,
-            f"GET /booking 返回交互式选座页（{len(booking_html)} 字节）",
+            response.status == 200 and "提交订单" in dev_html,
+            f"GET /dev 含『提交订单』入口（{len(dev_html)} 字节）",
         )
-        check("/api/book" in booking_html, "交互页调用真实下单接口（不是预置回放）")
+        check("/api/tickets/book" in dev_html,
+              "开发者页调用真实下单接口（不是预置回放）")
         with urllib.request.urlopen(
             f"http://127.0.0.1:{port}/api/scenario/passengers/family_with_child", timeout=30
         ) as response:

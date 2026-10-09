@@ -116,8 +116,6 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path in ("/", "/index.html"):
                 self._send_page("index.html")
-            elif path == "/booking":
-                self._send_page("booking.html")
             elif path == "/acceptance":
                 self._send_page("acceptance.html")
             elif path == "/ticket-first":

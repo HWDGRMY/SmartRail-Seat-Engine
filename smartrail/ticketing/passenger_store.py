@@ -140,18 +140,40 @@ PASSENGER_TYPE_BY_ID: dict[str, dict[str, Any]] = {
     item["id"]: item for item in PASSENGER_TYPES
 }
 
-#: 界面下拉的分组（"选择人群类型"用）
+#: 界面选择的分组。
+#:
+#: **为什么这样分组**：早期把 16 种类型平铺给旅客看，里面并列出现了
+#: "成人 / 幼儿 / 孕妇（1-3个月）/ 孕妇（4-6个月）/ 孕妇（7-9个月）/
+#: 孕妇（10个月/37周+）/ 视障（需导盲）……" —— 旅客第一眼看到的是
+#: 一堆需要医学与无障碍知识才能选的选项，普通人只会困惑。
+#:
+#: 真实的购票界面只有"成人 / 学生 / 儿童"这几档；孕妇按孕周、
+#: 残疾按类别确实需要区分（因为待遇不同），但它们属于**特殊服务**，
+#: 应当是"需要时才展开"的第二层，而不是和"成人"并列的第一层。
+#:
+#: 因此分成：
+#:   * ``basic``      —— 常用（成人 / 学生 / 儿童 / 老人）
+#:   * ``pregnant``   —— 孕妇（按孕周细分）
+#:   * ``disabled``   —— 残疾旅客（按类别细分）
+#:   * ``companion``  —— 陪同人
+#:
+#: ``basic=True`` 的分组在界面上直接平铺；其余分组收在"需要特别服务"里。
 PASSENGER_TYPE_GROUPS: tuple[dict[str, Any], ...] = (
-    {"id": "normal", "label": "普通旅客",
-     "types": ("adult", "student", "youth", "elderly")},
-    {"id": "child", "label": "儿童与婴幼儿",
-     "types": ("child", "toddler", "infant")},
-    {"id": "pregnant", "label": "孕妇",
+    {"id": "basic", "label": "常用", "basic": True,
+     "hint": "绝大多数旅客选这几种",
+     "types": ("adult", "student", "child", "elderly")},
+    {"id": "pregnant", "label": "孕妇", "basic": False,
+     "hint": "按孕周区分，晚期与足月需重点旅客服务",
      "types": ("pregnant_early", "pregnant_mid", "pregnant_late", "pregnant_term")},
-    {"id": "disabled", "label": "重点旅客",
+    {"id": "disabled", "label": "残疾旅客", "basic": False,
+     "hint": "按类别区分，轮椅旅客硬约束匹配轮椅停放位",
      "types": ("wheelchair", "blind", "blind_with_guide", "intellectual")},
-    {"id": "companion", "label": "陪同人",
+    {"id": "companion", "label": "陪同人", "basic": False,
+     "hint": "健康成人，用于与需照护者绑定同车厢",
      "types": ("caregiver",)},
+    {"id": "minor", "label": "未成年细分", "basic": False,
+     "hint": "青少年可独立购票；幼儿与婴儿须成人陪同",
+     "types": ("youth", "toddler", "infant")},
 )
 
 
@@ -435,8 +457,15 @@ def passenger_type_catalog() -> dict[str, Any]:
             {
                 "id": group["id"],
                 "label": group["label"],
+                # 界面上"直接平铺"还是"收进需要特别服务"
+                "basic": bool(group.get("basic")),
+                "hint": group.get("hint", ""),
                 "types": [
-                    {"id": tid, "label": PASSENGER_TYPE_BY_ID[tid]["label"]}
+                    {
+                        "id": tid,
+                        "label": PASSENGER_TYPE_BY_ID[tid]["label"],
+                        "desc": PASSENGER_TYPE_BY_ID[tid]["desc"],
+                    }
                     for tid in group["types"]
                 ],
             }

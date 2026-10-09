@@ -14,7 +14,7 @@
 用法::
 
     python tools/check_page_js.py                # 检查全部页面
-    python tools/check_page_js.py booking        # 只检查 booking.html
+    python tools/check_page_js.py ticketing      # 只检查 ticketing.html
 """
 
 from __future__ import annotations
@@ -29,22 +29,19 @@ ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "smartrail" / "web"
 
 #: 每个页面必须绑上点击处理的按钮
+#: （``booking.html`` 已按需求删除，其下单能力移到 developer.html）
 REQUIRED_BUTTONS: dict[str, list[str]] = {
-    "booking.html": [
-        "addpax", "btnsubmit", "btnreset", "btnclear", "navreset", "btnscenario",
-        "btnAddOrder", "btnClearOrders", "btnDemoOrders", "btnSubmitOrders",
-        "btnComposeSubmit", "btnComposeAdd", "btnComposeDup", "btnComposeDemo",
-        "btnComposeClear",
-    ],
     "ticketing.html": [
         "navPax", "btnPickPax", "btnPickCancel", "btnPickOk",
-        "btnAddPax", "btnAddCancel", "btnAddOk", "btnSubmit",
+        "btnAddPax", "btnAddCancel", "btnAddOk", "btnSpecial", "btnSubmit",
     ],
-    "developer.html": ["btnReset"],
+    "developer.html": [
+        "btnReset", "btnSubmitOrder", "btnPickAll", "btnPickNone",
+    ],
 }
 
 #: 需要真实请求后端；没有服务时跳过这些页面
-NEEDS_BACKEND = {"booking.html", "ticketing.html", "developer.html"}
+NEEDS_BACKEND = {"ticketing.html", "developer.html"}
 
 HARNESS = r"""
 const fs = require('fs');

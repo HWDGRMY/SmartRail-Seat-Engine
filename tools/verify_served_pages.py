@@ -12,11 +12,13 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(r"F:\PycharmProjects\SmartRail-Seat-Engine")
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from smartrail.web.bracket_check import check_html_tags, check_js_brackets
 from smartrail.web.js_lint import top_level_duplicates
+
+import tools.check_page_js as harness_module  # noqa: E402
 
 BASE = "http://127.0.0.1:8000"
 problems: list[str] = []
@@ -29,12 +31,11 @@ def check(ok: bool, message: str) -> None:
 
 
 PAGES: tuple[tuple[str, str], ...] = (
-    ("booking", "/booking"),
+    ("ticketing", "/ticket"),
+    ("developer", "/dev"),
     ("ticket-first", "/ticket-first"),
     ("acceptance", "/acceptance"),
     ("index", "/"),
-    ("ticketing", "/ticket"),
-    ("developer", "/dev"),
 )
 
 for name, path in PAGES:
@@ -71,8 +72,12 @@ result = subprocess.run(
 )
 output = result.stdout or ""
 print("\n".join(output.strip().splitlines()[-8:]))
-check(output.count("：OK") >= 3,
-      f"三个交互页面的 boot() 正常、按钮全部绑定（OK 计数 {output.count('：OK')}）")
+# 交互页面数量**从 tools/check_page_js.py 的按钮清单推导**，不写死 ——
+# 早期写死 3，删掉 booking.html 后就对不上了（剩 2 个交互页）。
+interactive = len(harness_module.REQUIRED_BUTTONS)
+check(output.count("：OK") >= interactive,
+      f"{interactive} 个交互页面的 boot() 正常、按钮全部绑定"
+      f"（OK 计数 {output.count('：OK')}）")
 check("未绑定按钮" not in output and "点击报错" not in output,
       "没有未绑定按钮或点击异常")
 _ = tempfile  # 保留 import 供将来落盘调试用

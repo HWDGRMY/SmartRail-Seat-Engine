@@ -83,6 +83,12 @@
   .paxline{font-size:12.5px;display:flex;gap:8px;padding:3px 0;
     border-bottom:1px dashed var(--line)}
   .paxline .nm{flex:1}
+  /* 提交订单面板里的乘车人勾选行 */
+  .paxlist{max-height:280px;overflow:auto}
+  .paxpick{cursor:pointer;border-radius:5px;padding:4px 6px;align-items:center}
+  .paxpick:hover{background:#f7fafd}
+  .paxpick.on{background:#f2f7fd}
+  .paxpick input{margin:0 2px 0 0}
   .tag{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11px;
     background:#eef4fd;color:var(--blue-d);border:1px solid #d8e7fa}
   .tag.q{background:#f3f0fd;color:var(--quiet);border-color:#e2ddfa}
@@ -139,7 +145,37 @@
         <h2>模拟余票 <span class="hint">调整后实时影响用户模式</span></h2>
         <div class="body" id="sliders"></div>
       </div>
-      <!-- 上座率 -->
+      <!-- 提交订单：开发者模式下的下单入口。
+           原先这里是"预制乘车人"列表；下单功能被单独放在 /booking 工具页，
+           但那个页面的批量订单输入对使用者是负担，已按需求删除，
+           下单能力集中到本页。 -->
+      <div class="card">
+        <h2>提交订单 <span class="hint">勾选预制乘车人 → 选席别 → 提交</span></h2>
+        <div class="body">
+          <div class="row" style="margin-bottom:8px">
+            <label class="hint" style="width:52px">席别</label>
+            <select id="orderClass" style="flex:1;padding:5px 8px;border:1px solid var(--line);
+              border-radius:6px;font-family:inherit;font-size:13px"></select>
+            <label class="hint" style="width:52px">单号</label>
+            <input id="orderId" placeholder="留空自动生成"
+              style="flex:1;padding:5px 8px;border:1px solid var(--line);
+              border-radius:6px;font-family:inherit;font-size:13px">
+          </div>
+          <div class="row" style="margin-bottom:8px">
+            <button class="btn ghost small" id="btnPickAll">全选</button>
+            <button class="btn ghost small" id="btnPickNone">清空</button>
+            <span class="hint" id="pickedCount">已选 0 位</span>
+          </div>
+          <div id="passengers" class="paxlist"></div>
+          <div class="row" style="margin-top:10px">
+            <button class="btn" id="btnSubmitOrder" data-testid="submit-order">
+              提交订单</button>
+            <span class="hint">同一订单默认坐一起；凑不出连座时自动分票</span>
+          </div>
+          <div id="orderResult" style="margin-top:10px"></div>
+        </div>
+      </div>
+      <!-- 快速压测 -->
       <div class="card">
         <h2>快速压测</h2>
         <div class="body">
@@ -151,19 +187,16 @@
             <button class="btn ghost small" data-fill="1">满座</button>
           </div>
           <div class="hint" style="margin-top:8px">
-            「满座」只占满座位，不影响手动锁定。重置系统才能完全清空。
+            占用**按真实售票打散**（不是从排头顺序占），这样余票是碎片化的，
+            「凑不出连座 → 自动分票」才会被真实触发。
           </div>
+          <div class="hint" id="fragInfo" style="margin-top:6px"></div>
         </div>
       </div>
       <!-- 订单 -->
       <div class="card">
         <h2>用户下单记录 <span class="hint" id="orderCount"></span></h2>
         <div class="body" id="orders"><div class="hint">还没有订单。</div></div>
-      </div>
-      <!-- 预制乘车人 -->
-      <div class="card">
-        <h2>预制乘车人 <span class="hint" id="paxCount"></span></h2>
-        <div class="body" id="passengers"></div>
       </div>
     </div>
   </div>
@@ -205,6 +238,9 @@ const esc = (s) => String(s == null ? "" : s)
 
 let snapshot = null;
 let pendingTimers = {};
+// 提交订单面板的状态
+let allProfiles = [];
+let pickedProfiles = [];
 
 function seatClass(seat) {
   if (!seat.occupied) return seat.bay_slot ? "bayslot" : "";
@@ -373,13 +409,81 @@ async function renderPassengers() {
   // 开发者模式取**全部**档案（含内置预制）；用户模式走同一个接口的
   // 默认 scope=user，只看得到用户自己添加的人。
   const data = await api("/api/dev/passengers");
-  $("paxCount").textContent = `共 ${data.count} 位（各类人群各一位）`;
-  $("passengers").innerHTML = (data.passengers || []).map((p) => `
-    <div class="paxline">
+  allProfiles = data.passengers || [];
+  // 勾选状态按 ID 保留，刷新后不丢
+  const keep = new Set(pickedProfiles.filter(
+    (id) => allProfiles.some((p) => p.profile_id === id)));
+  pickedProfiles = [...keep];
+  renderPassengerPicker();
+}
+
+function renderPassengerPicker() {
+  const box = $("passengers");
+  if (!box) return;
+  box.innerHTML = allProfiles.map((p) => `
+    <label class="paxline paxpick${pickedProfiles.includes(p.profile_id) ? " on" : ""}"
+      data-testid="pax-${esc(p.profile_id)}">
+      <input type="checkbox" data-id="${esc(p.profile_id)}"
+        ${pickedProfiles.includes(p.profile_id) ? "checked" : ""}>
       <span class="nm">${esc(p.name)}</span>
       <span class="tag">${esc(p.type_label)}</span>
       <span class="hint">${esc(p.id_card || "")}</span>
-    </div>`).join("");
+    </label>`).join("");
+  box.querySelectorAll("input[type=checkbox]").forEach((node) => {
+    node.onchange = () => {
+      const id = node.dataset.id;
+      pickedProfiles = node.checked
+        ? [...pickedProfiles, id]
+        : pickedProfiles.filter((x) => x !== id);
+      renderPassengerPicker();
+    };
+  });
+  if ($("pickedCount")) {
+    $("pickedCount").textContent = `已选 ${pickedProfiles.length} 位`;
+  }
+}
+
+async function submitOrder() {
+  const box = $("orderResult");
+  if (!pickedProfiles.length) {
+    box.innerHTML = `<div class="hint" style="color:var(--bad)">
+      请先勾选至少一位乘车人。</div>`;
+    return;
+  }
+  const orderId = ($("orderId").value || "").trim()
+    || `DEV-${Date.now().toString().slice(-6)}`;
+  try {
+    const body = await post("/api/tickets/book", {
+      class_code: $("orderClass").value,
+      profile_ids: pickedProfiles,
+      order_id: orderId,
+    });
+    const seats = (body.order.passengers || []).map((p) =>
+      `<div class="paxline">
+        <span class="nm">${esc(p.name)}</span>
+        <span class="tag">${esc(p.seat_id || "候补")}</span>
+        <span class="hint">${esc(p.class_code || "")}${
+          p.wheelchair_bay ? " · 轮椅位" : ""}</span>
+      </div>`).join("");
+    const ask = body.wheelchair && body.wheelchair.needs_confirmation
+      ? `<div class="notice" style="margin-top:6px;color:var(--warn)">
+           ${esc(body.wheelchair.question)}</div>` : "";
+    const problems = (body.errors || []).map((e) =>
+      `<div class="hint" style="color:var(--bad)">${esc(e)}</div>`).join("");
+    box.innerHTML = `
+      <div class="hint" style="margin-bottom:6px">
+        订单 ${esc(orderId)} ·
+        ${body.ok ? "已出票" : "未出票"} ·
+        Tier 0 ${body.tier0} ·
+        ${body.order.seated}/${body.order.passengers.length} 人就座
+        ${body.order.split ? " · 已自动分票" : ""}</div>
+      ${seats}${ask}${problems}`;
+    await refresh();
+    await renderOrders();
+  } catch (error) {
+    box.innerHTML = `<div class="hint" style="color:var(--bad)">
+      提交失败：${esc(error.message)}</div>`;
+  }
 }
 
 async function refresh() {
@@ -414,6 +518,18 @@ async function refresh() {
 }
 
 async function boot() {
+  const classOptions = ["二等座", "一等座", "商务座"];
+  $("orderClass").innerHTML = classOptions
+    .map((c) => `<option value="${c}">${c}</option>`).join("");
+  $("btnSubmitOrder").onclick = submitOrder;
+  $("btnPickAll").onclick = () => {
+    pickedProfiles = allProfiles.map((p) => p.profile_id);
+    renderPassengerPicker();
+  };
+  $("btnPickNone").onclick = () => {
+    pickedProfiles = [];
+    renderPassengerPicker();
+  };
   $("btnReset").onclick = async () => {
     if (!confirm("重置系统：清空所有订单与座位占用，乘车人恢复预制状态。继续？")) return;
     await post("/api/dev/reset", { passengers: true });
@@ -423,9 +539,18 @@ async function boot() {
   };
   document.querySelectorAll("button[data-fill]").forEach((button) => {
     button.onclick = async () => {
-      await post("/api/dev/fill", { ratio: Number(button.dataset.fill) });
+      const result = await post("/api/dev/fill",
+        { ratio: Number(button.dataset.fill) });
       await refresh();
       toast(`已卖到 ${(Number(button.dataset.fill) * 100).toFixed(0)}%`);
+      if ($("fragInfo") && result.fragmentation) {
+        const frag = result.fragmentation["二等座"] || result.fragmentation;
+        $("fragInfo").textContent =
+          `当前余票碎片化：最长连座 ${frag.longest_run}，`
+          + `≥2 连座 ${frag.runs_at_least_2} 处，`
+          + `≥3 连座 ${frag.runs_at_least_3} 处 —— `
+          + `最长连座越小人越多，越会触发自动分票。`;
+      }
     };
   });
   try {

@@ -204,10 +204,16 @@ def dev_set_remaining(payload: dict[str, Any]) -> tuple[int, Any]:
 
 
 def dev_fill(payload: dict[str, Any]) -> tuple[int, Any]:
-    """把整列车卖到指定上座率（压测用）。"""
+    """把整列车卖到指定上座率（压测用）。
+
+    返回值里带上**碎片化指标**：同样剩 100 张票，"一整排连座"与
+    "100 个互不相邻的单座"对分票逻辑的意义完全不同，只报余票数会掩盖差别。
+    """
     store = ticketing.get_dev_store()
     ratio = float(payload.get("ratio", 0.0))
-    return 200, store.fill_to_ratio(ratio)
+    result = store.fill_to_ratio(ratio)
+    result["fragmentation"] = store.fragmentation("二等座")
+    return 200, result
 
 
 def dev_toggle_seat(payload: dict[str, Any]) -> tuple[int, Any]:

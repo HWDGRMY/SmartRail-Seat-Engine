@@ -57,10 +57,9 @@ FATAL:mojo\public\cpp\platform\platform_channel.cc: Check failed: . : 拒绝访�
 | `draw_wheelchair.py` | 画轮椅固定停放位的**独立编号**与"询问后出票"流程 | `docs/screenshots/wheelchair-bays.png` |
 | `draw_fragmentation.py` | 画"按顺序占 vs 打散占"的余票格局差异（为何压测不能按顺序占） | `docs/screenshots/fragmentation.png` |
 | `draw_ticket_first.py` | 画出票优先策略的 6 个场景对比 | `docs/screenshots/ticket-first.png` |
-| `verify_order_page.py` | 批量提交页的页面级验收（自带服务） | 控制台结论 |
-| `verify_composer.py` | OrderEditor 的页面级验收（自带服务） | 控制台结论 |
+| `verify_order_api.py` | 批量提交**接口**级验收（自带服务、打真实接口） | 控制台结论 |
 | `check_page_js.py` | **在 Node 里真跑页面 JS**：启动、按钮绑定、逐个点击 | 控制台结论 |
-| `verify_served_pages.py` | 检查**服务实际下发**的六个页面（防"本地好了、线上还是旧版"） | 控制台结论 |
+| `verify_served_pages.py` | 检查**服务实际下发**的五个页面（防"本地好了、线上还是旧版"） | 控制台结论 |
 | `verify_ticketing.py` | 12306 购票流程的 HTTP 端到端验收（自带服务） | 控制台结论 |
 | `verify_goal_12306.py` | **逐条验收 12306 重构需求**的 12 项（需后端在跑） | 控制台结论 |
 | `verify_readme.py` | **校验 README 里的可核查声明**（路径、断言数、文件数） | 控制台结论 |
@@ -92,8 +91,7 @@ python tools/draw_ticket_first.py
 页面验收脚本**不需要**手动启动后端（它自己起一个随机端口的服务）：
 
 ```bash
-python tools/verify_order_page.py     # 批量提交页
-python tools/verify_composer.py       # OrderEditor（人员构成组单）
+python tools/verify_order_api.py      # 批量提交接口
 python tools/verify_ticketing.py      # 12306 购票流程（用户模式 + 开发者模式）
 ```
 
@@ -101,8 +99,8 @@ python tools/verify_ticketing.py      # 12306 购票流程（用户模式 + 开�
 
 ```bash
 python tools/check_page_js.py         # 在 Node 里真跑每个页面的 JS 并逐个点按钮
-python tools/check_page_js.py booking # 只检查某一页
-python tools/verify_served_pages.py   # 检查服务实际下发的六个页面
+python tools/check_page_js.py ticketing # 只检查某一页
+python tools/verify_served_pages.py   # 检查服务实际下发的五个页面
 ```
 
 **需求逐条验收**（需后端在跑）：
@@ -147,7 +145,7 @@ python tools/count_files.py       # 各目录文件数/行数（改文档时取�
 
 ## 与测试的关系
 
-`verify_order_page.py` 与 `tests/test_concurrent.py` 覆盖同一批接口契约，但层次不同：
+`verify_order_api.py` 与 `tests/test_concurrent.py` 覆盖同一批接口契约，但层次不同：
 
 * **单元级**（`tests/`）：直接调业务函数，快、无网络；
 * **页面级**（本目录）：起真实 HTTP 服务 + 抓真实 HTML，验证"用户实际看到的东西"。

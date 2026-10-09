@@ -480,6 +480,87 @@ def test_engine_rebuild_keeps_order_fields() -> None:
         check("class_code" in str(error), f"守卫拦下漏传（{str(error)[:50]}…）")
 
 
+def test_passenger_types_are_layered_for_real_users() -> None:
+    """人群选择必须分两层：常用档 + 需要特别服务。
+
+    真实反馈：16 种类型平铺给旅客看时，"成人"旁边并列着
+    "孕妇（1-3个月）/ 孕妇（4-6个月）/ 孕妇（7-9个月）/ 视障（需导盲）"，
+    普通人看了会迷惑 —— 那是需要医学与无障碍知识才能选的选项。
+
+    正确做法：**常用档只放普通人一眼能选的**（成人 / 学生 / 儿童 / 老人），
+    孕妇（按孕周）、残疾（按类别）、陪同人、未成年细分收进"需要特别服务"。
+    孕妇与残疾仍要细分（待遇不同），但它们是**第二层**。
+
+    这里同时守住"两层都存在" —— 只做常用档会让孕妇与轮椅旅客无处可选。
+    """
+    print("[购票] 人群选择分两层")
+    catalog = passenger_type_catalog()
+    groups = catalog["groups"]
+    basic = [g for g in groups if g.get("basic")]
+    special = [g for g in groups if not g.get("basic")]
+
+    check(len(basic) == 1, f"常用档恰好 1 组（{len(basic)}）")
+    check(basic[0]["id"] == "basic", f"常用档 id = {basic[0]['id']}")
+    basic_ids = [t["id"] for t in basic[0]["types"]]
+    check(basic_ids == ["adult", "student", "child", "elderly"],
+          f"常用档是普通人看得懂的选项（{basic_ids}）")
+    # 常用档里不该出现需要专业判断的类型
+    for forbidden in ("pregnant_term", "blind_with_guide", "intellectual",
+                      "wheelchair", "toddler", "infant"):
+        check(forbidden not in basic_ids,
+              f"『{forbidden}』不在常用档（避免旅客困惑）")
+
+    special_ids = [g["id"] for g in special]
+    check("pregnant" in special_ids, "孕妇单独一类")
+    check("disabled" in special_ids, "残疾旅客单独一类")
+    check("companion" in special_ids, "陪同人单独一类")
+    # 孕妇四档与残疾四类都必须仍可选中（不能因为收起来就丢了）
+    all_special = {t["id"] for g in special for t in g["types"]}
+    for needed in ("pregnant_early", "pregnant_mid", "pregnant_late",
+                   "pregnant_term", "wheelchair", "blind",
+                   "blind_with_guide", "intellectual", "caregiver"):
+        check(needed in all_special, f"『{needed}』仍可选（在特别服务里）")
+
+    # 两组加起来必须覆盖全部类型 —— 否则有类型永远选不到
+    every = {t["id"] for t in catalog["types"]}
+    covered = set(basic_ids) | all_special
+    check(covered == every,
+          f"两层覆盖全部 {len(every)} 种类型（缺失 {sorted(every - covered)}）")
+    check(len(every) == 16, f"类型总数仍为 16（{len(every)}）")
+
+
+def test_user_page_has_collapsible_special_section() -> None:
+    """用户模式页面必须有可展开的『需要特别服务』折叠区。"""
+    print("[购票] 用户模式折叠区")
+    page = (ROOT / "smartrail" / "web" / "ticketing.html").read_text(encoding="utf-8")
+    check('id="specialBody"' in page, "含折叠区容器")
+    check('id="btnSpecial"' in page, "含展开按钮")
+    check("需要特别服务" in page, "按钮文案说明是特别服务")
+    check('id="typeList"' in page, "常用档平铺容器仍在")
+    check("typeGroups" in page, "按接口返回的分组渲染（不写死）")
+    check("group.basic" in page, "按 basic 标记决定平铺或收起")
+
+
+def test_booking_page_is_gone() -> None:
+    """批量提交页面已按需求删除，且没有残留引用。
+
+    需求："批量提交订单删了不要，我要在开发者页面见到提交订单"。
+    删页面容易、删干净难 —— 残留的路由/链接会让页面 404 而不是消失。
+    """
+    print("[购票] /booking 已下线")
+    check(not (ROOT / "smartrail" / "web" / "booking.html").exists(),
+          "booking.html 已删除")
+    server = (ROOT / "smartrail" / "api" / "stdlib_server.py").read_text(
+        encoding="utf-8")
+    check('"/booking"' not in server, "stdlib_server 不再注册 /booking")
+    app = (ROOT / "smartrail" / "api" / "app.py").read_text(encoding="utf-8")
+    check('"/booking"' not in app, "FastAPI 版本不再注册 /booking")
+    # 开发者页必须有提交订单入口
+    dev = (ROOT / "smartrail" / "web" / "developer.html").read_text(encoding="utf-8")
+    check("提交订单" in dev, "开发者页含『提交订单』")
+    check("btnSubmitOrder" in dev, "含提交按钮")
+
+
 def main() -> int:
     tests = [
         test_default_profiles_cover_every_type,
@@ -500,6 +581,9 @@ def main() -> int:
         test_same_order_passengers_sit_together,
         test_class_code_is_a_hard_constraint,
         test_engine_rebuild_keeps_order_fields,
+        test_passenger_types_are_layered_for_real_users,
+        test_user_page_has_collapsible_special_section,
+        test_booking_page_is_gone,
     ]
     if UNDER_PYTEST:
         for test in tests:

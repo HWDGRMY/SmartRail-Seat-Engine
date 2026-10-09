@@ -106,6 +106,18 @@
   .typeitem.on{border-color:var(--blue);background:#f7fbff}
   .typeitem b{font-size:13px;display:block}
   .typeitem span{font-size:11px;color:var(--muted)}
+  .typegroup{margin:2px 0 10px}
+  .typegroup .ghead{font-size:11.5px;color:var(--muted);margin:0 0 5px}
+  .special{margin-top:4px}
+  .specialtoggle{width:100%;display:flex;justify-content:space-between;align-items:center;
+    background:#f7f9fc;border:1px dashed var(--line);border-radius:7px;
+    padding:9px 12px;font-size:13px;color:#3b4a5a;cursor:pointer;font-family:inherit}
+  .specialtoggle:hover{border-color:var(--blue);color:#2b5f96}
+  .specialbody{display:none;padding:10px 2px 2px}
+  .specialbody.on{display:block}
+  .typegroup .ghint{font-size:11px;color:#8a97a6;margin:0 0 6px}
+  .picked{margin-top:10px;font-size:13px;color:#2b5f96;display:none}
+  .picked.on{display:block}
   .notice{padding:9px 12px;border-radius:6px;font-size:13px;line-height:1.7;margin-bottom:10px}
   .notice.info{background:#f2f7fd;color:#2b5f96;border-left:3px solid var(--blue)}
   .notice.ok{background:#f0fbf4;color:#217a45;border-left:3px solid var(--ok)}
@@ -237,9 +249,20 @@
         <input id="paxId" placeholder="用于身份核验"></div>
       <div class="field"><label>手机号码</label>
         <input id="paxPhone" placeholder="+86 | 请填写乘车人手机号"></div>
-      <div style="margin:6px 0 8px;font-size:13px;color:#556">
-        优惠（待）类型 / 人群类型</div>
-      <div class="typelist" id="typeList"></div>
+      <div class="field"><label>票种</label>
+        <div class="typelist" id="typeList"></div></div>
+      <!-- 需要特别服务的旅客（孕妇按孕周、残疾按类别）确实要区分，
+           因为它们对应的席别待遇与陪同要求不同。但它们不该和"成人"
+           并列在第一层 —— 普通旅客看到"孕妇（4-6个月）"只会困惑。
+           因此收在折叠区里，需要时才展开。 -->
+      <div class="special" id="specialBox">
+        <button class="specialtoggle" id="btnSpecial" type="button">
+          <span>需要特别服务（孕妇 / 残疾 / 陪同人 / 未成年细分）</span>
+          <span id="specialArrow">▾</span>
+        </button>
+        <div class="specialbody" id="specialBody"></div>
+      </div>
+      <div id="typePicked" class="picked"></div>
     </div>
     <div class="mfoot">
       <button class="btn ghost" id="btnAddCancel">取消</button>
@@ -262,6 +285,7 @@ let quietPref = false;
 let allPassengers = [];
 let selected = [];          // 已选乘车人 profile_id，顺序即优先顺序
 let typeCatalog = [];
+let typeGroups = [];
 let pendingType = "adult";
 let orders = [];
 
@@ -490,18 +514,57 @@ function renderPickList() {
   $("pickCount").textContent = selected.length;
 }
 
+// 人群选择分两层：
+//   * 常用档（成人 / 学生 / 儿童 / 老人）直接平铺 —— 绝大多数旅客点一下就走；
+//   * 孕妇（按孕周）、残疾（按类别）、陪同人、未成年细分收在折叠区里。
+// 分组与文案全部来自 /api/passengers/types，前端不写死，避免两边漂移。
 function renderTypeList() {
-  $("typeList").innerHTML = typeCatalog.map((item) => `
-    <div class="typeitem${item.id === pendingType ? " on" : ""}" data-type="${esc(item.id)}">
+  const basic = typeGroups.filter((group) => group.basic);
+  const special = typeGroups.filter((group) => !group.basic);
+
+  function itemHtml(item) {
+    return `<div class="typeitem${item.id === pendingType ? " on" : ""}"
+      data-type="${esc(item.id)}" data-testid="type-${esc(item.id)}">
       <b>${esc(item.label)}</b><span>${esc(item.desc)}</span>
+    </div>`;
+  }
+
+  $("typeList").innerHTML = basic.map((group) => `
+    <div class="typegroup" style="grid-column:1/-1">
+      <div class="ghead">${esc(group.label)} · ${esc(group.hint)}</div>
+      <div class="typelist">${group.types.map(itemHtml).join("")}</div>
     </div>`).join("");
-  $("typeList").querySelectorAll(".typeitem").forEach((node) => {
-    node.onclick = () => {
-      pendingType = node.dataset.type;
-      $("typeList").querySelectorAll(".typeitem")
-        .forEach((n) => n.classList.toggle("on", n.dataset.type === pendingType));
-    };
-  });
+
+  $("specialBody").innerHTML = special.map((group) => `
+    <div class="typegroup" data-testid="group-${esc(group.id)}">
+      <div class="ghead">${esc(group.label)}</div>
+      <div class="ghint">${esc(group.hint)}</div>
+      <div class="typelist">${group.types.map(itemHtml).join("")}</div>
+    </div>`).join("");
+
+  document.querySelectorAll("#typeList .typeitem, #specialBody .typeitem")
+    .forEach((node) => {
+      node.onclick = () => {
+        pendingType = node.dataset.type;
+        document.querySelectorAll("#typeList .typeitem, #specialBody .typeitem")
+          .forEach((n) => n.classList.toggle("on", n.dataset.type === pendingType));
+        renderPicked();
+      };
+    });
+  renderPicked();
+}
+
+function renderPicked() {
+  const node = $("typePicked");
+  if (!node) return;
+  const hit = typeCatalog.find((item) => item.id === pendingType);
+  if (!hit) {
+    node.classList.remove("on");
+    node.textContent = "";
+    return;
+  }
+  node.classList.add("on");
+  node.textContent = `已选票种：${hit.label} —— ${hit.desc}`;
 }
 
 async function loadPassengers() {
@@ -675,6 +738,10 @@ async function boot() {
     renderTypeList();
   };
   $("btnAddCancel").onclick = () => $("modalAdd").classList.remove("on");
+  $("btnSpecial").onclick = () => {
+    const open = $("specialBody").classList.toggle("on");
+    $("specialArrow").textContent = open ? "▴" : "▾";
+  };
   $("btnAddOk").onclick = async () => {
     try {
       const created = await post("/api/passengers/add", {
@@ -704,6 +771,7 @@ async function boot() {
   try {
     const cat = await api("/api/passengers/types");
     typeCatalog = cat.types || [];
+    typeGroups = cat.groups || [];
     await loadTrains();
     await loadPassengers();
     await loadOrders();

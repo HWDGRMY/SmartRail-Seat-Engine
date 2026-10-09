@@ -213,8 +213,9 @@ print("=== 目标 11：静音车厢 03 与 11 ===")
 check(snap["quiet_carriages"] == [3, 11], f"静音车厢 = {snap['quiet_carriages']}")
 
 print()
-print("=== 目标 12：保留现有页面作为工具页 ===")
-for path, name in (("/booking", "批量提交 + OrderEditor"),
+print("=== 目标 12：页面集合（/booking 已按需求下线）===")
+for path, name in (("/ticket", "用户模式购票"),
+                   ("/dev", "开发者模式（含提交订单）"),
                    ("/ticket-first", "出票优先场景"),
                    ("/acceptance", "验收台"),
                    ("/", "座位图")):
@@ -224,7 +225,51 @@ for path, name in (("/booking", "批量提交 + OrderEditor"),
             status = response.status
     except urllib.error.URLError:
         status = 0
-    check(status == 200, f"{path} 仍可访问（{name}）")
+    check(status == 200, f"{path} 可访问（{name}）")
+# 批量提交页面已删除：确认它**真的不可访问**，而不是"忘了删路由"
+booking_status = 0
+try:
+    with urllib.request.urlopen(BASE + "/booking", timeout=30) as response:
+        booking_status = response.status
+except urllib.error.HTTPError as error:
+    booking_status = error.code
+except urllib.error.URLError:
+    booking_status = 0
+check(booking_status == 404, f"/booking 已下线（HTTP {booking_status}）")
+
+print()
+print("=== 目标 12b：开发者页的『提交订单』入口 ===")
+with urllib.request.urlopen(BASE + "/dev", timeout=30) as response:
+    dev_html = response.read().decode("utf-8")
+check("提交订单" in dev_html, "开发者页含『提交订单』区域")
+check("btnSubmitOrder" in dev_html, "含提交按钮")
+check("submit-order" in dev_html, "按钮有 testid（可被自动化点击）")
+check("/api/tickets/book" in dev_html, "调用真实下单接口")
+check("orderClass" in dev_html, "含席别选择")
+check("pickedProfiles" in dev_html, "含乘车人勾选状态")
+check('<div class="card">' in dev_html and "paxlist" in dev_html,
+      "含乘车人勾选列表")
+
+print()
+print("=== 目标 12c：人群选择分两层（常用 / 需要特别服务）===")
+status, catalog = call("/api/passengers/types")
+groups = catalog["groups"]
+basic = [g for g in groups if g.get("basic")]
+special = [g for g in groups if not g.get("basic")]
+check(len(basic) == 1 and basic[0]["id"] == "basic",
+      f"常用档只有一组（{[g['id'] for g in basic]}）")
+basic_ids = [t["id"] for t in basic[0]["types"]]
+check(basic_ids == ["adult", "student", "child", "elderly"],
+      f"常用档是普通人看得懂的选项（{basic_ids}）")
+special_ids = {g["id"] for g in special}
+check("pregnant" in special_ids and "disabled" in special_ids,
+      f"孕妇与残疾单列（{sorted(special_ids)}）")
+# 用户模式页面必须有折叠区，且常用档直接可见
+with urllib.request.urlopen(BASE + "/ticket", timeout=30) as response:
+    user_html = response.read().decode("utf-8")
+check("specialBody" in user_html, "用户模式含『需要特别服务』折叠区")
+check("btnSpecial" in user_html, "折叠区可展开")
+check("typeList" in user_html, "常用档直接平铺")
 
 print()
 print("=== 目标 13：轮椅固定停放位（独立编号，不占座位票额）===")

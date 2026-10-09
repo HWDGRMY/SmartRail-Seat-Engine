@@ -27,7 +27,6 @@ from smartrail.api.stdlib_server import serve  # noqa: E402
 
 UNDER_PYTEST = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
 _FAILURES: list[str] = []
-PAGE = ROOT / "smartrail" / "web" / "booking.html"
 
 
 def check(condition: bool, message: str) -> None:
@@ -329,24 +328,26 @@ def test_manual_order_submission() -> None:
     check(not normal["confirmations"], "正常单不产生确认询问")
 
 
-def test_page_has_concurrent_ui() -> None:
-    """页面必须有批量订单构造与未满足提示。"""
-    print("[提交] 页面交互区")
-    text = PAGE.read_text(encoding="utf-8")
+def test_dev_page_has_order_submission() -> None:
+    """开发者页必须有"提交订单"入口。
+
+    ``/booking`` 批量提交页面已按需求删除，下单能力集中到 ``/dev``：
+    勾选预制乘车人 → 选席别 → 提交。这里守住这个入口不丢失。
+    """
+    print("[提交] 开发者页下单入口")
+    text = (ROOT / "smartrail" / "web" / "developer.html").read_text(encoding="utf-8")
     for token, label in (
-        ("批量提交订单", "批量提交区域"),
-        ("/api/orders/submit", "调用提交接口"),
-        ("/api/orders/types", "调用类型清单接口"),
-        ('id="palette"', "乘客类型面板"),
-        ("id=\"orderList\"", "订单列表"),
-        ("btnAddOrder", "『新建订单』按钮"),
-        ("btnSubmitOrders", "『提交全部订单』按钮"),
-        ("renderUnmet", "未满足提示渲染"),
-        ("impossible", "『无法满足』分档"),
-        ("ORDER_COLORS", "订单颜色表"),
-        ("renderConcurrentSeatMap", "座位图按订单着色"),
+        ("提交订单", "『提交订单』区域"),
+        ("/api/tickets/book", "调用真实下单接口"),
+        ("btnSubmitOrder", "『提交订单』按钮"),
+        ("submit-order", "按钮 testid"),
+        ("orderClass", "席别选择"),
+        ("pickedProfiles", "乘车人勾选状态"),
+        ("renderPassengerPicker", "乘车人勾选渲染"),
     ):
         check(token in text, label)
+    # 已删除的页面不应再被引用
+    check("booking.html" not in text, "开发者页不再引用已删除的 booking.html")
 
 
 def main() -> int:
@@ -357,7 +358,7 @@ def main() -> int:
         test_manual_order_submission,
         test_same_order_default_bond_is_strong,
         test_concurrent_api_contract,
-        test_page_has_concurrent_ui,
+        test_dev_page_has_order_submission,
     ]
     passed = 0
     for test in tests:
