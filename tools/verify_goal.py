@@ -91,12 +91,35 @@ print("=== 目标 3：已推送到 GitHub ===")
 info = api(f"https://api.github.com/repos/{REPO}")
 note(info["visibility"] == "public", f"仓库公开：{info['visibility']}")
 note((info.get("license") or {}).get("spdx_id") == "MIT", "许可证识别为 MIT")
+def all_remote_commits() -> list[dict]:
+    """分页取回**全部**提交。
+
+    早期写死 ``per_page=20``，提交数超过 20 之后就开始假失败：
+    远程 HEAD 一致、文件清单一致，只有"提交数 20 != 本地 21"——
+    这是**校验脚本自己的上限**，不是仓库出问题。
+    """
+    commits: list[dict] = []
+    page = 1
+    while True:
+        chunk = api(
+            f"https://api.github.com/repos/{REPO}/commits"
+            f"?per_page=100&page={page}"
+        )
+        if not chunk:
+            break
+        commits.extend(chunk)
+        if len(chunk) < 100:
+            break
+        page += 1
+    return commits
+
+
 local_head = subprocess.run(["git", "rev-parse", "main"], cwd=ROOT, capture_output=True,
                             text=True).stdout.strip()
 remote_head = api(f"https://api.github.com/repos/{REPO}/commits/main")["sha"]
 note(local_head == remote_head,
      f"远程 HEAD 与本地一致（{remote_head[:7]}）")
-commits = api(f"https://api.github.com/repos/{REPO}/commits?per_page=20")
+commits = all_remote_commits()
 local_commits = subprocess.run(
     ["git", "rev-list", "--count", "main"], cwd=ROOT, capture_output=True,
     text=True).stdout.strip()
