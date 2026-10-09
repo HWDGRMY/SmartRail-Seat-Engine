@@ -237,10 +237,15 @@ def outcome_summary(
     # 分档原则：**先把"票发出去了没有"说清楚**，再说例外。
     # 早期把"专区不足"一律算作"无法满足"，与"出票优先"原则直接冲突 ——
     # 明明还有 800 多个空座，却告诉用户"无法满足"。
+    #
+    # 关于 `hard_violations`：它**不计入分档**。Tier 0 是"求解器失误"的指标，
+    # 而这类订单能出票就说明已经尽力了；把它算成"部分满足"会让页面出现
+    # 自相矛盾的结果（"8/8 出票"却又标"其余候补"）。Tier 0 单独在
+    # `tier0` 字段里呈现，供工程侧监控。
     has_confirmation = bool(feasibility and feasibility.needs_confirmation)
     if seated == 0:
         level = "impossible"
-    elif waitlisted or hard_violations:
+    elif waitlisted:
         level = "partial"
     elif any(notice["level"] == "action" for notice in notices):
         level = "action_required"

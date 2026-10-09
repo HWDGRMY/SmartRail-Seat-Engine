@@ -574,6 +574,9 @@ def submit_orders(payload: Mapping[str, Any]) -> dict[str, Any]:
             for item in results
             if item.get("question")
         ],
+        # "需要用户知道或处理"的订单：不含直接出票的那两档。
+        # 注意不能只排除 ``fulfilled`` —— 那样会把 ``confirmed`` 也塞进来，
+        # 而 confirmed 是"票已出、用户确认即可"，不属于"需要处理"。
         "unmet_orders": [
             {
                 "order_id": item["order_id"],
@@ -582,7 +585,7 @@ def submit_orders(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "reasons": item["reasons"],
             }
             for item in results
-            if item["level"] not in ("fulfilled",)
+            if item["level"] in ("partial", "action_required", "impossible")
         ],
         "feasibility_codes": feasibility_catalog(),
         "train": snapshot,

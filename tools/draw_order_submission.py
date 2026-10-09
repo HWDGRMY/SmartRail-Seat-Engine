@@ -130,20 +130,23 @@ def main() -> int:
     metrics = [
         ("订单 / 乘客", f"{summary['orders']} / {summary['requested_passengers']}", INK),
         ("出票 / 候补", f"{summary['seated_passengers']} / {summary['waitlisted_passengers']}", INK),
-        ("完全满足", str(summary["fulfilled_orders"]), OK),
-        ("部分满足", str(summary["partial_orders"]), WARN if summary["partial_orders"] else INK),
-        ("需现场处理", str(summary["action_orders"]), WARN if summary["action_orders"] else INK),
-        ("无法满足", str(summary["impossible_orders"]),
+        ("全部出票", str(summary["fulfilled_orders"]), OK),
+        ("已确认例外后出票", str(summary.get("confirmed_orders", 0)), (31, 139, 145)),
+        ("已出票需现场处理", str(summary["action_orders"]),
+         (194, 112, 58) if summary["action_orders"] else INK),
+        ("部分出票其余候补", str(summary["partial_orders"]),
+         WARN if summary["partial_orders"] else INK),
+        ("无座可发", str(summary["impossible_orders"]),
          BAD if summary["impossible_orders"] else OK),
         ("Tier 0 违规", str(summary["tier0_violations"]),
          BAD if summary["tier0_violations"] else OK),
         ("总耗时", f"{summary['wall_ms']} ms", INK),
     ]
-    box_w = (W - 48 - 32) / 8
+    box_w = (W - 48 - 32) / len(metrics)
     for index, (label, value, color) in enumerate(metrics):
         x = 40 + index * box_w
         draw.rounded_rectangle([x, y + 14, x + box_w - 12, y + 80], 8, fill=(247, 249, 251))
-        draw.text((x + 12, y + 22), label, font=font(12), fill=MUTED)
+        draw.text((x + 12, y + 22), label, font=font(11.5), fill=MUTED)
         draw.text((x + 12, y + 44), value, font=font(19, True), fill=color)
 
     # ---- 需要确认的例外 / 需要现场处理的订单 ----
