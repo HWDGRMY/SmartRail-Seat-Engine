@@ -421,7 +421,15 @@ def book_ticket_order(
         "preference": preference.to_dict(),
         "passengers": passengers_payload,
         "seated": len(assignments),
-        "waitlisted": len(solution.waitlisted),
+        # **存列表，不是长度。** 原先写成 ``len(solution.waitlisted)``，
+        # 而下面第 448 行按列表用（``len(order_record["waitlisted"])``）——
+        # 一旦真的走到"有人被候补"的分支就抛
+        # ``TypeError: object of type 'int' has no len()``。
+        #
+        # 这个 bug 一直没暴露，是因为求解器以前总能塞下至少一个人；
+        # 加了轮椅定义域限制（停放位售罄时轮椅旅客无候选）之后才被触发。
+        # 存列表也与开发者台账（dev-composition）的形状保持一致。
+        "waitlisted": list(solution.waitlisted),
         "carriages": carriages,
         "rows": [f"{carriage}车{row}排" for carriage, row in rows],
         "split": actually_split,

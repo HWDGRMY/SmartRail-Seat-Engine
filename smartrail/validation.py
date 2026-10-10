@@ -127,10 +127,16 @@ INVARIANTS: tuple[Invariant, ...] = (
     Invariant("R5", "RESOURCE", "轮椅停放位不得重复分配",
               "同一 bay_id 只能分配给一位轮椅旅客。"),
     Invariant("R6", "RESOURCE", "停放位有余时轮椅旅客不得坐普通座位",
-              "全列停放位尚有空余时，轮椅旅客必须进入停放位；"
-              "只有停放位售罄才允许『询问后改出普通坐票』。"),
+              "**判据必须算『可达性』，不能只看『还有没有空位』。**"
+              "实测假阳性：4 位轮椅旅客同属一个单元（必须同车厢），"
+              "而任何车厢都只有 2 个停放位 —— 12 车虽空着 2 个，"
+              "跨过去却会违反硬绑定。此时正解就是"
+              "『轮椅本人进停放位 + 家属坐邻座（04车01C/D）』。"
+              "只有当**同一车厢内**仍有空停放位时，没坐进去才算违规。"),
     Invariant("R7", "RESOURCE", "普通旅客不得占用轮椅停放位",
-              "停放位是轮椅旅客的专用资源，普通旅客落在上面记 Tier 0。"),
+              "停放位是轮椅旅客的专用资源，普通旅客落在上面记 Tier 0。"
+              "注意区分『停放位落点座位』与『邻座』：后者是普通座位，"
+              "正常发售，不属于 R7。"),
     Invariant("R8", "RESOURCE", "席别必须符合订单要求",
               "订单指定了 class_code 时，分配座位的席别必须与之相同。"),
     # ---- 出票完整性 ----
@@ -370,17 +376,48 @@ def check_solution(
                         {"passenger_id": pid, "bay": bay_key})
 
         if free_bays is not None and free_bays > 0:
+            # **按车厢判，不是"全列还有没有空位"。**
+            #
+            # 实测假阳性：4 位轮椅旅客同属一个单元（硬绑定 -> 必须同车厢），
+            # 而 04/12 车各只有 2 个停放位 —— 12 车虽空着 2 个，
+            # 跨过去会违反硬绑定。此时正解就是
+            # "轮椅本人进停放位 + 家属坐邻座"。
+            # 只看"全列还有空位"会把正解误判成违规。
+            bay_carriages = {bay.carriage for bay in formation.wheelchair_bays}
             for pid, assignment in assigned.items():
                 passenger = by_pid.get(pid)
                 if passenger is None or not _is_wheelchair(passenger):
                     continue
                 seat_id = getattr(assignment, "seat_id", "")
-                if seat_id not in bay_slots:
+                if seat_id in bay_slots:
+                    continue
+                seat = seats.get(seat_id)
+                if seat is None:
+                    continue
+                # 该乘客所在车厢里是否还有空停放位（且未被本单占用）
+                same_car_bays = [
+                    bay for bay in formation.wheelchair_bays
+                    if bay.carriage == seat.carriage
+                ]
+                if not same_car_bays:
+                    continue          # 这节车厢本就没有停放位，不算违规
+                used_here = {_canonical_bay(formation, a.seat_id)
+                             for a in assigned.values()}
+                free_here = [
+                    bay for bay in same_car_bays
+                    if bay.bay_id not in used_here
+                    and bay.bay_id not in set(assigned_bays)
+                ]
+                if free_here:
                     _breach(report, "R6",
                             f"{pid} 是轮椅旅客，但拿到普通座位 {seat_id}"
-                            f"（当时仍有 {free_bays} 个停放位空余）",
+                            f"（同车厢 {seat.carriage} 车仍有 "
+                            f"{len(free_here)} 个停放位空余："
+                            f"{[b.bay_id for b in free_here]}）",
                             {"passenger_id": pid, "seat_id": seat_id,
-                             "free_bays": free_bays})
+                             "carriage": seat.carriage,
+                             "free_here": [b.bay_id for b in free_here]})
+            _ = bay_carriages
 
     # ---------------- C1：有空座不得候补 ----------------
     if waitlisted:
